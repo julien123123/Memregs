@@ -4,7 +4,8 @@ import struct, json
 s_fl = 'cache.json'
 
 class MemReg:
-    __slots__ = ('name','_id','mem','buf','span','memstart','items','sv_cls')
+    __slots__ = ('name','_id','mem','buf','span','memstart','items','sv_cls', 'dlt')
+
     def __init__(self, name, mem, memstart, *args, span = 32):
         self.name = name
         self._id = hash(args + tuple([memstart, span]))
@@ -13,6 +14,7 @@ class MemReg:
         self.span = span
         self.memstart = memstart
         self.items = {}
+        self.dlt = False
         if not self._file_chk():
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
@@ -39,6 +41,7 @@ class MemReg:
                             l[self.name].pop('ID')
                             self._load_reg(l[self.name])
                             return True
+                        self.dlt = True
                 self.sv_cls = True
                 return False
         except OSError:
@@ -53,24 +56,25 @@ class MemReg:
             
         
     def _sv_reg(self):
-        if hasattr(self, 'sv_cls') and self.sv_cls:
-            print('Saving to cache')
-            sv = {self.name: {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}}
-            sv[self.name].update({'ID':self._id})
-            try:
-                with open(s_fl, 'w') as f:
-                    if f.seek(0, 2):
-                        f.seek(0)
-                        l = json.load(f)
-                        if self.name in l:
-                            del l[self.name]
-                    else:
-                        l = {}
-                    l.update(sv)
-                    json.dump(l, f)
-                    
-            except OSError:
-                print('fesse')
+        if not getattr(self, 'sv_cls', False):
+            return
+        sv = {self.name: {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}}
+        sv[self.name].update({'ID':self._id})
+        l = {}
+        try:
+            with open(s_fl, 'r') as f:
+                if f.seek(0, 2):
+                    f.seek(0)
+                    l = json.load(f)
+                    if self.dlt:
+                        del l[self.name]
+                
+        except OSError:
+            pass
+        
+        l.update(sv)
+        with open(s_fl, 'w') as f:
+                json.dump(l, f)
 
     def _order_items(self):
         """
@@ -86,6 +90,7 @@ class MemReg:
                 bit_cursor %= 8
             itm.byte_pos = word_cursor
             itm.bit_pos = bit_cursor
+            itm.mask = 1 << bit_cursor
             bit_cursor += itm.length
             itm.memref = memoryview(self.buf)[itm.byte_pos:itm.byte_pos + 1]
             itm.buf = itm.raw_val
@@ -101,6 +106,7 @@ class MemReg:
             word_cursor += itm.length
             itm.memref = memoryview(self.buf)[itm.byte_pos:itm.byte_pos + itm.length]
             itm.buf = itm.raw_val
+
     def _ld_buf(self):
         self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
 
@@ -108,8 +114,7 @@ class MemReg:
         for v in self.items.values():
             if v.bin:
                 base_word = v.memref[0]
-                mask = 1 << v.bit_pos
-                new_w = base_word | mask if v.buf == 1 else base_word & ~mask
+                new_w = base_word | v.mask if v.buf == 1 else base_word & ~v.mask
                 v.memref[:] = struct.pack('B', new_w)
             else:
                 if len(v.memref) != len(bytes(v.buf)):
@@ -119,6 +124,7 @@ class MemReg:
         self._ld_buf()
 
 class Memitem:
+    __slots__ = ('indx','name','length','bin','pack_format','bit_pos','byte_pos','memref','buf','mask')
     @classmethod
     def from_dict(cls,d, reg):
         obj = cls(d['indx'], d['name'], d['length'], d.get('bin', False), d.get('pack_format', False))
@@ -141,6 +147,7 @@ class Memitem:
         self.bit_pos = 0
         self.byte_pos = 0
         self.memref = None
+        self.mask = 0
         self.buf = 0 # Set to raw_val in Memreg
 
     @property
@@ -188,14 +195,16 @@ if __name__ == "__main__":
     nvmem.items['flag'].ch_val(True)
     nvmem._ncode()
     '''
-    b = bytearray(os.urandom(8))
+    b = bytearray(os.urandom(16))
     nvm = memoryview(b)
     nvam = MemReg('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3), ('PLUS', 4), span =8)
+    mimi = MemReg('mimi', nvm, 8, ('passw', 1), ('flag', 1, True), ('Nan', 4))
     #nvam.items['passw'].ch_val('Joli cil')
     #nvam.post_all()
     try:
         print(nvam)
     except TypeError:
         pass
+    print(mimi)
     nvam['SAC'] = 'IOU'
     nvam.post_all()
