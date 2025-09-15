@@ -2,6 +2,54 @@
 import struct, json
 
 s_fl = 'cache.json'
+class MemCache:
+    """
+    Class to manage saving and loading of memory cache to a JSON file
+    """
+    def __init__(self, fnm):
+        self.fnm = fnm
+        self.cache = {}
+        self.h = False
+        # The save cache is a waitline for changing the dict contained in it
+        self.sv_cache = False
+
+    def ld(self):
+        try:
+            with open(self.fnm, 'r') as f:
+                if f.seek(0, 2):
+                    f.seek(0)
+                    self.cache = json.load(f)
+                    self.h = hash(self.cache)
+                    return
+        except OSError:
+            pass
+        self.cache = {}
+        self.h = hash(self.cache)
+
+    def sv(self):
+        if not self.sv_cache:
+            return
+        l = {}
+        k = next(iter(self.sv_cache.keys()))
+        try:
+            with open(self.fnm, 'r') as f:
+                if f.seek(0, 2):
+                    f.seek(0)
+                    l = json.load(f)
+                    if k in l:
+                        del l[k]
+        except OSError:
+            pass
+        l.update(self.sv_cache)
+
+        with open(self.fnm, 'w') as f:
+                json.dump(l, f)
+
+        if k in self.cache:
+            del self.cache[k]
+
+        self.sv_cache = False
+
 
 class MemReg:
     __slots__ = ('name','_id','mem','buf','span','memstart','items','sv_cls', 'dlt')
