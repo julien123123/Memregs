@@ -1,7 +1,7 @@
 # class that manages memory, status and metadata in given memory
 import struct, json
 
-s_fl = 'cache.json'
+#s_fl = 'cache.json'
 class MemCache:
     """
     Class to manage saving and loading of memory cache to a JSON file
@@ -52,6 +52,10 @@ class MemCache:
 
 
 class MemReg:
+    
+    s_fl = 'cache.json'
+    c = MemCache(s_fl)
+
     __slots__ = ('name','_id','mem','buf','span','memstart','items','sv_cls', 'dlt')
 
     def __init__(self, name, mem, memstart, *args, span = 32):
@@ -80,7 +84,7 @@ class MemReg:
         
     def _file_chk(self):
         try:
-            with open(s_fl, 'r') as f:
+            with open(MemReg.s_fl, 'r') as f:
                 if f.seek(0, 2):
                     f.seek(0)
                     l = json.load(f)
@@ -110,7 +114,7 @@ class MemReg:
         sv[self.name].update({'ID':self._id})
         l = {}
         try:
-            with open(s_fl, 'r') as f:
+            with open(MemReg.s_fl, 'r') as f:
                 if f.seek(0, 2):
                     f.seek(0)
                     l = json.load(f)
@@ -121,7 +125,7 @@ class MemReg:
             pass
         
         l.update(sv)
-        with open(s_fl, 'w') as f:
+        with open(MemReg.s_fl, 'w') as f:
                 json.dump(l, f)
 
     def _order_items(self):

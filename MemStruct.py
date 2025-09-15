@@ -1,20 +1,92 @@
-import uctypes
+import uctypes, json
+
+class MemCache:
+    """
+    Class to manage saving and loading of memory cache to a JSON file
+    """
+    def __init__(self, fnm):
+        self.fnm = fnm
+        self.cache = {}
+        self.h = False
+        #TODO: the cache doesn't work for uctypes.array only, but the other ctypes do work    
+
+    def _ld(self):
+        try:
+            with open(self.fnm, 'r') as f:
+                if f.seek(0, 2):
+                    f.seek(0)
+                    self.cache = json.load(f)
+                    self.h = hash(str(self.cache))
+                    return
+        except OSError:
+            pass
+        self.cache = {}
+        self.h = hash(str(self.cache))
+
+    def get(self, nm, h):
+        self._ld() if not self.h else None
+        if nm in self.cache.keys():
+            if self.cache[nm]['ID'] == h:
+                self.cache[nm].pop('ID')
+                r = self.cache[nm]
+                del self.cache[nm]
+                return r
+            del self.cache[nm]
+        return False
+    
+    def push(self, name, value, id):
+        l = {}
+        value.update({'ID': id})
+        try:
+            with open(self.fnm, 'r') as f:
+                if f.seek(0, 2):
+                    f.seek(0)
+                    l = json.load(f)
+                    if name in l:
+                        del l[name]
+        except OSError:
+            pass
+
+        l.update({name:value})
+
+        with open(self.fnm, 'w') as f:
+                json.dump(l, f)
+
+        if name in self.cache.keys():
+            del self.cache[name]
 
 '''
 args structure: (name, length, bin=False, uctype format = None)
 '''
-class ucMemReg:
-    def __init__(self, name, mem, memstart, *args, span=32):
-        self.id = hash(args + tuple([memstart, span]))
-        self.buf = mem[memstart:memstart + span]
+class Reg:
+    c = False
+    def __init__(self, name, mem, memstart, span):
+        self._id = False
         self.name = name
         self.mem = mem
         self.memstart = memstart
         self.span = span
+        self.buf = mem[memstart:memstart + span]
+
+    def post_all(self):
+        self.mem[self.memstart:self.memstart + self.span] = self.buf
+    
+    def ld_buf(self):
+        self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
+
+class ucMemReg(Reg):
+    c = MemCache('ccache.json')
+    def __init__(self, name, mem, memstart, *args, span=32):
+        super().__init__(name, mem, memstart, span)
+        
+        self._id = hash(args + tuple([memstart, span]))
         self.struct = {}
         self.layout = {}
-
-        self._parse_args(args)
+        self.sav = self._from_cache()
+        if self.sav:
+            print('saving to cache...')
+            self._parse_args(args)
+            ucMemReg.c.push(self.name, self.layout, self._id)
         self._make_struct()
 
     def __getitem__(self, it):
@@ -30,6 +102,15 @@ class ucMemReg:
 
     def __str__(self):
         return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
+
+    def _from_cache(self):
+        r = ucMemReg.c.get(self.name, self._id)
+        if r:
+            self.layout = r
+            print(self.layout)
+            return False
+        return True
+
 
     def _parse_args(self, ar):
         bit_pos = 0
@@ -68,16 +149,8 @@ class ucMemReg:
                     self.layout.update({name: (byte_pos | uctypes.ARRAY , ln |  uctypes.UINT8)})
             byte_pos += ln
 
-
     def _make_struct(self):
         self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
-
-    def _ld_buf(self):
-        self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
-
-    def post_all(self):
-        self.mem[self.memstart:self.memstart + self.span] = self.buf
-        self._ld_buf()
 
     def toggle(self, key):
         self[key] = self[key] ^ 1
