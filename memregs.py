@@ -1,7 +1,6 @@
 # class that manages memory, status and metadata in given memory
-import struct, json
+import struct, json, uctypes
 
-#s_fl = 'cache.json'
 class MemCache:
     """
     Class to manage saving and loading of memory cache to a JSON file
@@ -9,69 +8,169 @@ class MemCache:
     def __init__(self, fnm):
         self.fnm = fnm
         self.cache = {}
-        self.h = False
-        # The save cache is a waitline for changing the dict contained in it
-        self.sv_cache = False
+        self.h = False  
 
-    def ld(self):
+    def _ld(self):
         try:
             with open(self.fnm, 'r') as f:
                 if f.seek(0, 2):
                     f.seek(0)
                     self.cache = json.load(f)
-                    self.h = hash(self.cache)
+                    self.h = hash(str(self.cache))
                     return
         except OSError:
             pass
         self.cache = {}
-        self.h = hash(self.cache)
+        self.h = hash(str(self.cache))
 
-    def sv(self):
-        if not self.sv_cache:
-            return
+    def get(self, nm, h):
+        self._ld() if not self.h else None
+        if nm in self.cache.keys():
+            if self.cache[nm]['ID'] == h:
+                self.cache[nm].pop('ID')
+                r = self.cache[nm]
+                del self.cache[nm]
+                return r
+            del self.cache[nm]
+        return False
+    
+    def push(self, name, value, id):
         l = {}
-        k = next(iter(self.sv_cache.keys()))
+        value.update({'ID': id})
         try:
             with open(self.fnm, 'r') as f:
                 if f.seek(0, 2):
                     f.seek(0)
                     l = json.load(f)
-                    if k in l:
-                        del l[k]
+                    if name in l:
+                        del l[name]
         except OSError:
             pass
-        l.update(self.sv_cache)
+
+        l.update({name:value})
 
         with open(self.fnm, 'w') as f:
                 json.dump(l, f)
 
-        if k in self.cache:
-            del self.cache[k]
+        if name in self.cache.keys():
+            del self.cache[name]
 
-        self.sv_cache = False
+'''
+args structure: (name, length, bin=False, uctype format = None)
+'''
+class Reg:
+    c = False
+    def __init__(self, name, mem, memstart, span):
+        self._id = False
+        self.name = name
+        self.mem = mem
+        self.memstart = memstart
+        self.span = span
+        self.buf = mem[memstart:memstart + span]
 
-
-class MemReg:
+    def post_all(self):
+        self.mem[self.memstart:self.memstart + self.span] = self.buf
+        self.ld_buf()
     
-    s_fl = 'cache.json'
-    c = MemCache(s_fl)
+    def ld_buf(self):
+        self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
 
-    __slots__ = ('name','_id','mem','buf','span','memstart','items','sv_cls', 'dlt')
+class ucMemReg(Reg):
+    c = MemCache('ccache.json')
+    def __init__(self, name, mem, memstart, *args, span=32):
+        super().__init__(name, mem, memstart, span)
+        
+        self._id = hash(args + tuple([memstart, span]))
+        self.struct = {}
+        self.layout = {}
+        self.sav = self._from_cache()
+        if self.sav:
+            print('saving to cache...')
+            self._parse_args(args)
+            ucMemReg.c.push(self.name, self.layout, self._id)
+        self._make_struct()
+
+    def __getitem__(self, it):
+        return getattr(self.struct, it)
+
+    def __setitem__(self, key, value):
+        if type(value) in (str, bytes, bytearray):
+            value = value.encode('utf-8') if type(value) is str else value
+            for i in range(len(value)):
+                self[key][i] = value[i]
+        else:
+            setattr(self.struct, key, value)
+
+    def __str__(self):
+        return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
+
+    def _from_cache(self):
+        r = ucMemReg.c.get(self.name, self._id)
+        if r:
+            self.layout = r
+            for k, v in self.layout.items():
+                if type(v) is list:
+                    self.layout[k] = tuple(v) # because json saves tuples as lists, and uctypes needs tuples
+            return False
+        return True
+
+
+    def _parse_args(self, ar):
+        bit_pos = 0
+        byte_pos = 0
+        binl=[]
+        l =[]
+        for args in ar:
+            if args[2]:
+                binl.append(args)
+            else:
+                l.append(args)
+        for dt in binl:
+            name, ln, b, f = dt
+            self.layout.update({name: byte_pos | bit_pos << uctypes.BF_POS | ln << uctypes.BF_LEN | uctypes.BFUINT8})
+            bit_pos += ln
+            if bit_pos >= 8:
+                byte_pos += bit_pos // 8
+                bit_pos = bit_pos % 8
+        if bit_pos > 0:
+            byte_pos += 1
+            bit_pos = 0
+        for dt in l:
+            name, ln, b, fmt = dt
+            if fmt:
+                self.layout.update({name: byte_pos | fmt})
+                print('he')
+                
+            else:
+                if ln == 1:
+                    self.layout.update({name: byte_pos | uctypes.UINT8})
+                elif ln == 2:
+                    self.layout.update({name: byte_pos | uctypes.UINT16})
+                elif ln == 4:
+                    self.layout.update({name: byte_pos | uctypes.UINT32})
+                else:
+                    self.layout.update({name: (byte_pos | uctypes.ARRAY , ln |  uctypes.UINT8)})
+            byte_pos += ln
+
+    def _make_struct(self):
+        self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
+
+    def toggle(self, key):
+        self[key] = self[key] ^ 1
+
+        
+class MemReg(Reg):
+    c = MemCache('cache.json')
 
     def __init__(self, name, mem, memstart, *args, span = 32):
-        self.name = name
+        super().__init__(name, mem, memstart, span)
         self._id = hash(args + tuple([memstart, span]))
-        self.mem = mem
-        self.buf = mem[memstart:memstart + span]
-        self.span = span
-        self.memstart = memstart
         self.items = {}
-        self.dlt = False
-        if not self._file_chk():
+        self.sav = self._from_cache()
+        if self.sav:
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
-            self._ld_buf()
-        self._sv_reg()
+            MemReg.c.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
 
     def __str__(self):
         return '\n'.join(str(v) for v in self.items.values())
@@ -81,52 +180,16 @@ class MemReg:
 
     def __setitem__(self, key, value):
         self.items[key].ch_val(value)
-        
-    def _file_chk(self):
-        try:
-            with open(MemReg.s_fl, 'r') as f:
-                if f.seek(0, 2):
-                    f.seek(0)
-                    l = json.load(f)
-                    if self.name in l:
-                        if l[self.name]['ID'] == self._id:
-                            l[self.name].pop('ID')
-                            self._load_reg(l[self.name])
-                            return True
-                        self.dlt = True
-                self.sv_cls = True
-                return False
-        except OSError:
-            self.sv_cls = True
+    
+    def _from_cache(self):
+        r = MemReg.c.get(self.name, self._id)
+        if r:
+            #self._load_reg(r)
+            for key, value in r.items():
+                self.items.update({key: Memitem.from_dict(value, self)})
+            print('Retrieving from cache')
             return False
-        
-    def _load_reg(self, dic):
-        print('Retrieving from cache')
-        self._ld_buf()
-        for key, value in dic.items():
-            self.items.update({key: Memitem.from_dict(value, self)})
-            
-        
-    def _sv_reg(self):
-        if not getattr(self, 'sv_cls', False):
-            return
-        sv = {self.name: {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}}
-        sv[self.name].update({'ID':self._id})
-        l = {}
-        try:
-            with open(MemReg.s_fl, 'r') as f:
-                if f.seek(0, 2):
-                    f.seek(0)
-                    l = json.load(f)
-                    if self.dlt:
-                        del l[self.name]
-                
-        except OSError:
-            pass
-        
-        l.update(sv)
-        with open(MemReg.s_fl, 'w') as f:
-                json.dump(l, f)
+        return True
 
     def _order_items(self):
         """
@@ -159,9 +222,6 @@ class MemReg:
             itm.memref = memoryview(self.buf)[itm.byte_pos:itm.byte_pos + itm.length]
             itm.buf = itm.raw_val
 
-    def _ld_buf(self):
-        self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
-
     def post_all(self):
         for v in self.items.values():
             if v.bin:
@@ -172,8 +232,7 @@ class MemReg:
                 if len(v.memref) != len(bytes(v.buf)):
                     v.buf = v.buf + b'\x00' * (len(v.memref) - len(v.buf))  # Adjust the length of v.buf
                 v.memref[:] = bytes(v.buf)
-        self.mem[self.memstart:self.memstart + self.span] = self.buf
-        self._ld_buf()
+        super().post_all()
 
 class Memitem:
     __slots__ = ('indx','name','length','bin','pack_format','bit_pos','byte_pos','memref','buf','mask')
@@ -260,3 +319,18 @@ if __name__ == "__main__":
     print(mimi)
     nvam['SAC'] = 'IOU'
     nvam.post_all()
+    m = bytearray(64)
+    nvim = ucMemReg('nvam', m,0,
+                    ('id', 2, False, False),
+                    ('flags', 1, False, False),
+                    ('bit1', 1, True, None),
+                    ('bit2', 1, True, None),
+                    ('bit3', 1, True, None),
+                    ('mode', 4, True, None),
+                    ('value', 4, False, False),
+                    ('name', 16, False, False))
+    print(nvim)
+    nvim['name'] = 'Julien'
+    nvim['value'] = 42
+    nvim.post_all()
+    print(m)
