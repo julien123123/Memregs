@@ -62,6 +62,10 @@ class MemCache:
 args structure: (name, length, bin=False, uctype format = None)
 '''
 class Reg:
+    """
+    Base class for memory-mapped registers that manages a memory buffer.
+    This avoids breaking micropython when modifying memory directly.
+    """
     c = False
     def __init__(self, name, mem, memstart, span):
         self._id = False
@@ -152,6 +156,16 @@ class ucMemReg(Reg):
                 else:
                     self.layout.update({name: (byte_pos | uctypes.ARRAY , ln |  uctypes.UINT8)})
             byte_pos += ln
+    
+    @staticmethod
+    def pack_code(c):
+        # map struct format characters to uctypes types, not sure if it's the way I want it to go.
+        codes = b"bBhHiIlLqQfd?"
+        types = [uctypes.INT8, uctypes.UINT8, uctypes.INT16, uctypes.UINT16, uctypes.INT32, uctypes.UINT32, uctypes.INT32, uctypes.UINT32, uctypes.INT64, uctypes.UINT64, uctypes.FLOAT32, uctypes.FLOAT64, uctypes.UINT8]
+        try:
+            return types[codes.index(c.encode())]
+        except ValueError:
+            raise ValueError(f"Unsupported struct format: {c}")
 
     def _make_struct(self):
         self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
