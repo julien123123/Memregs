@@ -7,8 +7,7 @@ class MemCache:
     def __init__(self, fnm):
         self.fnm = fnm
         self.cache = {}
-        self.h = False
-        #TODO: the cache doesn't work for uctypes.array only, but the other ctypes do work    
+        self.h = False  
 
     def _ld(self):
         try:
@@ -168,3 +167,4 @@ if __name__ == '__main__':
                     ('mode', 4, True, None),
                     ('value', 4, False, False),
                     ('name', 16, False, False))
+    print(nvam.layout)

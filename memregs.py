@@ -15,6 +15,7 @@ class MemCache:
             with open(self.fnm, 'r') as f:
                 if f.seek(0, 2):
                     f.seek(0)
+                    print('Loadind from cache...')
                     self.cache = json.load(f)
                     self.h = hash(str(self.cache))
                     return
@@ -36,7 +37,8 @@ class MemCache:
     
     def push(self, name, value, id):
         l = {}
-        value.update({'ID': id})
+        v_cp = value.copy() # Otherwise this crashes the ESP32 because it's added in struct.layout
+        v_cp.update({'ID': id})
         try:
             with open(self.fnm, 'r') as f:
                 if f.seek(0, 2):
@@ -47,8 +49,9 @@ class MemCache:
         except OSError:
             pass
 
-        l.update({name:value})
-
+        l.update({name:v_cp})
+        
+        print(f'Saving {name} to cache....')
         with open(self.fnm, 'w') as f:
                 json.dump(l, f)
 
@@ -85,7 +88,6 @@ class ucMemReg(Reg):
         self.layout = {}
         self.sav = self._from_cache()
         if self.sav:
-            print('saving to cache...')
             self._parse_args(args)
             ucMemReg.c.push(self.name, self.layout, self._id)
         self._make_struct()
@@ -113,7 +115,6 @@ class ucMemReg(Reg):
                     self.layout[k] = tuple(v) # because json saves tuples as lists, and uctypes needs tuples
             return False
         return True
-
 
     def _parse_args(self, ar):
         bit_pos = 0
@@ -184,10 +185,8 @@ class MemReg(Reg):
     def _from_cache(self):
         r = MemReg.c.get(self.name, self._id)
         if r:
-            #self._load_reg(r)
             for key, value in r.items():
                 self.items.update({key: Memitem.from_dict(value, self)})
-            print('Retrieving from cache')
             return False
         return True
 
@@ -297,30 +296,23 @@ class Memitem:
         self.buf = (self.raw_val + 1) % 2
 
 if __name__ == "__main__":
-    #from microcontroller import nvm
-    #import alarm
     import os
-    '''
-    nvmem = NVMem(nvm[0:32],('paw', 1, True), ('flag', 1, True), ('Nan', 4))
-    print(nvmem)
-    nvmem.items['flag'].ch_val(True)
-    nvmem._ncode()
-    '''
+    
     b = bytearray(os.urandom(16))
     nvm = memoryview(b)
     nvam = MemReg('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3), ('PLUS', 4), span =8)
     mimi = MemReg('mimi', nvm, 8, ('passw', 1), ('flag', 1, True), ('Nan', 4))
-    #nvam.items['passw'].ch_val('Joli cil')
-    #nvam.post_all()
+    nvam['SAC'] = 'IOU'
+    nvam.post_all()
     try:
         print(nvam)
     except TypeError:
         pass
+
     print(mimi)
-    nvam['SAC'] = 'IOU'
-    nvam.post_all()
+    
     m = bytearray(64)
-    nvim = ucMemReg('nvam', m,0,
+    nvim = ucMemReg('nvim', m,0,
                     ('id', 2, False, False),
                     ('flags', 1, False, False),
                     ('bit1', 1, True, None),
@@ -329,8 +321,8 @@ if __name__ == "__main__":
                     ('mode', 4, True, None),
                     ('value', 4, False, False),
                     ('name', 16, False, False))
-    print(nvim)
+    
     nvim['name'] = 'Julien'
     nvim['value'] = 42
     nvim.post_all()
-    print(m)
+    print(nvim)
