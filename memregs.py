@@ -1,7 +1,8 @@
-# class that manages memory, status and metadata in given memory
 import struct, json, uctypes
 
-class MemCache:
+#peut-être: sous-classes pour arguments en ordre de déclaration
+
+class RegCache:
     """
     Class to manage saving and loading of memory cache to a JSON file
     """
@@ -50,7 +51,6 @@ class MemCache:
             pass
 
         l.update({name:v_cp})
-        
         print(f'Saving {name} to cache....')
         with open(self.fnm, 'w') as f:
                 json.dump(l, f)
@@ -61,7 +61,7 @@ class MemCache:
 '''
 args structure: (name, length, bin=False, uctype format = None)
 '''
-class Reg:
+class Mem:
     """
     Base class for memory-mapped registers that manages a memory buffer.
     This avoids breaking micropython when modifying memory directly.
@@ -82,18 +82,21 @@ class Reg:
     def ld_buf(self):
         self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
 
-class ucMemReg(Reg):
-    c = MemCache('ccache.json')
+class Struct(Mem):
+    """
+    This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
+    Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
+    """
+    c = RegCache('ccache.json')
     def __init__(self, name, mem, memstart, *args, span=32):
         super().__init__(name, mem, memstart, span)
-        
         self._id = hash(args + tuple([memstart, span]))
         self.struct = {}
         self.layout = {}
         self.sav = self._from_cache()
         if self.sav:
             self._parse_args(args)
-            ucMemReg.c.push(self.name, self.layout, self._id)
+            Struct.c.push(self.name, self.layout, self._id)
         self._make_struct()
 
     def __getitem__(self, it):
@@ -111,7 +114,7 @@ class ucMemReg(Reg):
         return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
 
     def _from_cache(self):
-        r = ucMemReg.c.get(self.name, self._id)
+        r = Struct.c.get(self.name, self._id)
         if r:
             self.layout = r
             for k, v in self.layout.items():
@@ -126,12 +129,13 @@ class ucMemReg(Reg):
         binl=[]
         l =[]
         for args in ar:
+            args = self._ngst(*args)
             if args[2]:
                 binl.append(args)
             else:
                 l.append(args)
         for dt in binl:
-            name, ln, b, f = dt
+            name, ln, *rest = dt
             self.layout.update({name: byte_pos | bit_pos << uctypes.BF_POS | ln << uctypes.BF_LEN | uctypes.BFUINT8})
             bit_pos += ln
             if bit_pos >= 8:
@@ -141,29 +145,37 @@ class ucMemReg(Reg):
             byte_pos += 1
             bit_pos = 0
         for dt in l:
-            name, ln, b, fmt = dt
-            if fmt:
-                self.layout.update({name: byte_pos | fmt})
-                print('he')
-                
+            # name, length, bin, format
+            if dt[3] == uctypes.ARRAY:
+                self.layout.update({dt[0]: (byte_pos | dt[3], dt[1] | uctypes.UINT8)})
             else:
-                if ln == 1:
-                    self.layout.update({name: byte_pos | uctypes.UINT8})
-                elif ln == 2:
-                    self.layout.update({name: byte_pos | uctypes.UINT16})
-                elif ln == 4:
-                    self.layout.update({name: byte_pos | uctypes.UINT32})
-                else:
-                    self.layout.update({name: (byte_pos | uctypes.ARRAY , ln |  uctypes.UINT8)})
-            byte_pos += ln
-    
+                print(dt)
+                self.layout.update({dt[0]: (byte_pos | dt[3])})
+            byte_pos += dt[1]
+
     @staticmethod
-    def pack_code(c):
-        # map struct format characters to uctypes types, not sure if it's the way I want it to go.
-        codes = b"bBhHiIlLqQfd?"
-        types = [uctypes.INT8, uctypes.UINT8, uctypes.INT16, uctypes.UINT16, uctypes.INT32, uctypes.UINT32, uctypes.INT32, uctypes.UINT32, uctypes.INT64, uctypes.UINT64, uctypes.FLOAT32, uctypes.FLOAT64, uctypes.UINT8]
+    def _ngst(name, span, *rst):
+        lr = len(rst)
+        bn = False
+        fmt = False
+        if lr == 2:
+            bn, fmt = rst
+        if lr == 1:
+            if type(*rst) == bool:
+                bn = rst[0]
+            else:
+                fmt = rst
+        fmt = Struct._fmt('UINT8') if not fmt else Struct._fmt(fmt)
+        return (name, span, bn, fmt)
+
+    @staticmethod
+    def _fmt(c):
+        codes = b"bBhHiIlLqQfdsp"
+        types = (uctypes.INT8, uctypes.UINT8, uctypes.INT16, uctypes.UINT16, uctypes.INT32, uctypes.UINT32,
+                 uctypes.INT32, uctypes.UINT32, uctypes.INT64, uctypes.UINT64, uctypes.FLOAT32, uctypes.FLOAT64,
+                 uctypes.ARRAY, uctypes.ARRAY)
         try:
-            return types[codes.index(c.encode())]
+            return types[codes.index(c.encode())] if len(c) == 1 else getattr(uctypes, c)
         except ValueError:
             raise ValueError(f"Unsupported struct format: {c}")
 
@@ -174,8 +186,12 @@ class ucMemReg(Reg):
         self[key] = self[key] ^ 1
 
         
-class MemReg(Reg):
-    c = MemCache('cache.json')
+class Pack(Mem):
+    """
+    Pythonic class that manages memory-mapped registers with individual items.
+    Can be a better choice when uctypes.struct is too rigid.
+    """
+    c = RegCache('cache.json')
 
     def __init__(self, name, mem, memstart, *args, span = 32):
         super().__init__(name, mem, memstart, span)
@@ -185,7 +201,7 @@ class MemReg(Reg):
         if self.sav:
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
-            MemReg.c.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
+            Pack.c.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
 
     def __str__(self):
         return '\n'.join(str(v) for v in self.items.values())
@@ -197,7 +213,7 @@ class MemReg(Reg):
         self.items[key].ch_val(value)
     
     def _from_cache(self):
-        r = MemReg.c.get(self.name, self._id)
+        r = Pack.c.get(self.name, self._id)
         if r:
             for key, value in r.items():
                 self.items.update({key: Memitem.from_dict(value, self)})
@@ -210,7 +226,6 @@ class MemReg(Reg):
             It also makes it very easy to combine bits with bytes
         """
         word_cursor, bit_cursor = 0, 0
-
         # Process binary items first
         for itm in sorted((i for i in self.items.values() if i.bin), key=lambda obj: obj.indx):
             if bit_cursor >= 8:
@@ -222,12 +237,10 @@ class MemReg(Reg):
             bit_cursor += itm.length
             itm.memref = memoryview(self.buf)[itm.byte_pos:itm.byte_pos + 1]
             itm.buf = itm.raw_val
-
         # If bits are not aligned, move to next byte
         if bit_cursor > 0:
             word_cursor += 1
             bit_cursor = 0
-
         # Process non-binary items
         for itm in sorted((i for i in self.items.values() if not i.bin), key=lambda obj: obj.indx):
             itm.byte_pos = word_cursor
@@ -266,7 +279,6 @@ class Memitem:
         self.length = lenght
         self.bin = bin
         self.pack_format = pack_format
-
         ### Variables that will be set by Memreg._order_items()
         self.bit_pos = 0
         self.byte_pos = 0
@@ -314,8 +326,8 @@ if __name__ == "__main__":
     
     b = bytearray(os.urandom(16))
     nvm = memoryview(b)
-    nvam = MemReg('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3), ('PLUS', 4), span =8)
-    mimi = MemReg('mimi', nvm, 8, ('passw', 1), ('flag', 1, True), ('Nan', 4))
+    nvam = Pack('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3), ('PLUS', 4), span =8)
+    mimi = Pack('mimi', nvm, 8, ('passw', 1), ('flag', 1, True), ('Nan', 4))
     nvam['SAC'] = 'IOU'
     nvam.post_all()
     try:
@@ -324,17 +336,16 @@ if __name__ == "__main__":
         pass
 
     print(mimi)
-    
     m = bytearray(64)
-    nvim = ucMemReg('nvim', m,0,
-                    ('id', 2, False, False),
-                    ('flags', 1, False, False),
-                    ('bit1', 1, True, None),
-                    ('bit2', 1, True, None),
-                    ('bit3', 1, True, None),
-                    ('mode', 4, True, None),
-                    ('value', 4, False, False),
-                    ('name', 16, False, False))
+    nvim = Struct('nvim', m, 0,
+                  ('id', 2, False, False),
+                  ('flags', 1, False, False),
+                  ('bit1', 1, True, None),
+                  ('bit2', 1, True, None),
+                  ('bit3', 1, True, None),
+                  ('mode', 4, True, None),
+                  ('value', 4, False, False),
+                  ('name', 16, False, 'ARRAY'))
     
     nvim['name'] = 'Julien'
     nvim['value'] = 42
