@@ -1,74 +1,52 @@
 import struct, json, uctypes
+from functools import cache
+
 
 #peut-être: sous-classes pour arguments en ordre de déclaration
 
 class RegCache:
     """
-    Class to manage saving and loading of memory cache to a JSON file
+    manages saving and loading of memory cache to a JSON file
     """
     def __init__(self, fnm):
         self.fnm = fnm
-        self.cache = {}
-        self.h = False  
+        self.cache = None
 
     def _ld(self):
+        if self.cache is not None:
+            return
         try:
             with open(self.fnm, 'r') as f:
-                if f.seek(0, 2):
-                    f.seek(0)
-                    print('Loadind from cache...')
-                    self.cache = json.load(f)
-                    self.h = hash(str(self.cache))
-                    return
+                self.cache = json.load(f)
         except OSError:
-            pass
-        self.cache = {}
-        self.h = hash(str(self.cache))
+            self.cache = {}
 
     def get(self, nm, h):
-        self._ld() if not self.h else None
-        if nm in self.cache.keys():
-            if self.cache[nm]['ID'] == h:
-                self.cache[nm].pop('ID')
-                r = self.cache[nm]
-                del self.cache[nm]
-                return r
-            del self.cache[nm]
+        self._ld()
+        if nm in self.cache and self.cache[nm]['ID'] == h:
+            r = self.cache[nm] #.copy()
+            r.pop('ID', None)
+            return r
         return False
     
     def push(self, name, value, id):
-        l = {}
-        v_cp = value.copy() # Otherwise this crashes the ESP32 because it's added in struct.layout
-        v_cp.update({'ID': id})
-        try:
-            with open(self.fnm, 'r') as f:
-                if f.seek(0, 2):
-                    f.seek(0)
-                    l = json.load(f)
-                    if name in l:
-                        del l[name]
-        except OSError:
-            pass
-
-        l.update({name:v_cp})
-        print(f'Saving {name} to cache....')
+        self._ld()
+        self.cache[name] = value.copy()
+        self.cache[name]['ID'] = id
         with open(self.fnm, 'w') as f:
-                json.dump(l, f)
+            json.dump(self.cache, f)
 
-        if name in self.cache.keys():
-            del self.cache[name]
+CACHE = RegCache('memcache.json')
 
-'''
-args structure: (name, length, bin=False, uctype format = None)
-'''
+def delcache():
+    CACHE.cache = None
+
 class Mem:
     """
     Base class for memory-mapped registers that manages a memory buffer.
     This avoids breaking micropython when modifying memory directly.
     """
-    c = False
     def __init__(self, name, mem, memstart, span):
-        self._id = False
         self.name = name
         self.mem = mem
         self.memstart = memstart
@@ -87,17 +65,20 @@ class Struct(Mem):
     This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
     Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
     """
-    c = RegCache('ccache.json')
     def __init__(self, name, mem, memstart, *args, span=32):
         super().__init__(name, mem, memstart, span)
         self._id = hash(args + tuple([memstart, span]))
-        self.struct = {}
         self.layout = {}
-        self.sav = self._from_cache()
-        if self.sav:
+        sav =  CACHE.get(self.name, self._id)
+        if not sav:
             self._parse_args(args)
-            Struct.c.push(self.name, self.layout, self._id)
-        self._make_struct()
+            CACHE.push(self.name, self.layout, self._id)
+        else:
+            self.layout = sav
+            for k, v in self.layout.items():
+                if isinstance(v, list):
+                    self.layout[k]= tuple(v) # because json saves tuples as lists and it creates problems with uctypes.layout
+        self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
 
     def __getitem__(self, it):
         return getattr(self.struct, it)
@@ -105,23 +86,13 @@ class Struct(Mem):
     def __setitem__(self, key, value):
         if type(value) in (str, bytes, bytearray):
             value = value.encode('utf-8') if type(value) is str else value
-            for i in range(len(value)):
-                self[key][i] = value[i]
+            for i, b in enumerate(value):
+                self[key][i] = b
         else:
             setattr(self.struct, key, value)
 
     def __str__(self):
         return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
-
-    def _from_cache(self):
-        r = Struct.c.get(self.name, self._id)
-        if r:
-            self.layout = r
-            for k, v in self.layout.items():
-                if type(v) is list:
-                    self.layout[k] = tuple(v) # because json saves tuples as lists, and uctypes needs tuples
-            return False
-        return True
 
     def _parse_args(self, ar):
         bit_pos = 0
@@ -165,22 +136,8 @@ class Struct(Mem):
                 bn = rst[0]
             else:
                 fmt = rst
-        fmt = Struct._fmt('UINT8') if not fmt else Struct._fmt(fmt)
-        return (name, span, bn, fmt)
-
-    @staticmethod
-    def _fmt(c):
-        codes = b"bBhHiIlLqQfdsp"
-        types = (uctypes.INT8, uctypes.UINT8, uctypes.INT16, uctypes.UINT16, uctypes.INT32, uctypes.UINT32,
-                 uctypes.INT32, uctypes.UINT32, uctypes.INT64, uctypes.UINT64, uctypes.FLOAT32, uctypes.FLOAT64,
-                 uctypes.ARRAY, uctypes.ARRAY)
-        try:
-            return types[codes.index(c.encode())] if len(c) == 1 else getattr(uctypes, c)
-        except ValueError:
-            raise ValueError(f"Unsupported struct format: {c}")
-
-    def _make_struct(self):
-        self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
+        fmt = uctypes.UINT8 if not fmt else getattr(uctypes, fmt)
+        return name, span, bn, fmt
 
     def toggle(self, key):
         self[key] = self[key] ^ 1
@@ -191,8 +148,6 @@ class Pack(Mem):
     Pythonic class that manages memory-mapped registers with individual items.
     Can be a better choice when uctypes.struct is too rigid.
     """
-    c = RegCache('cache.json')
-
     def __init__(self, name, mem, memstart, *args, span = 32):
         super().__init__(name, mem, memstart, span)
         self._id = hash(args + tuple([memstart, span]))
@@ -201,7 +156,7 @@ class Pack(Mem):
         if self.sav:
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
-            Pack.c.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
+            CACHE.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
 
     def __str__(self):
         return '\n'.join(str(v) for v in self.items.values())
@@ -213,7 +168,7 @@ class Pack(Mem):
         self.items[key].ch_val(value)
     
     def _from_cache(self):
-        r = Pack.c.get(self.name, self._id)
+        r = CACHE.get(self.name, self._id)
         if r:
             for key, value in r.items():
                 self.items.update({key: Memitem.from_dict(value, self)})
@@ -303,9 +258,7 @@ class Memitem:
     def ch_val(self, new_val):
         self.reset()
         if self.bin:
-            if (len(bin(new_val))-2) > self.length:
-                raise ValueError('nb of bits superior to "lenght" attribute')
-            self.buf = new_val
+            self.buf = new_val & 1
         elif self.pack_format:
             self.buf = struct.pack(self.pack_format, new_val)
         else:
