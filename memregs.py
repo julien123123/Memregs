@@ -1,9 +1,8 @@
 import struct, json, uctypes
-from functools import cache
-
 
 #peut-être: sous-classes pour arguments en ordre de déclaration
 
+cache_f = 'memcache.json'
 class RegCache:
     """
     manages saving and loading of memory cache to a JSON file
@@ -24,7 +23,7 @@ class RegCache:
     def get(self, nm, h):
         self._ld()
         if nm in self.cache and self.cache[nm]['ID'] == h:
-            r = self.cache[nm] #.copy()
+            r = self.cache[nm].copy()
             r.pop('ID', None)
             return r
         return False
@@ -36,10 +35,14 @@ class RegCache:
         with open(self.fnm, 'w') as f:
             json.dump(self.cache, f)
 
-CACHE = RegCache('memcache.json')
+CACHE = RegCache(cache_f)
 
-def delcache():
+def clear_cache():
     CACHE.cache = None
+    
+def delete_cache():
+    import os
+    os.remove(cache_f)
 
 class Mem:
     """
@@ -54,6 +57,8 @@ class Mem:
         self.buf = mem[memstart:memstart + span]
 
     def post_all(self):
+        # Dans le fond, c'est juste bon pour struct
+        # Pour pack, chaque item écrit dans mem directement
         self.mem[self.memstart:self.memstart + self.span] = self.buf
         self.ld_buf()
     
@@ -120,7 +125,6 @@ class Struct(Mem):
             if dt[3] == uctypes.ARRAY:
                 self.layout.update({dt[0]: (byte_pos | dt[3], dt[1] | uctypes.UINT8)})
             else:
-                print(dt)
                 self.layout.update({dt[0]: (byte_pos | dt[3])})
             byte_pos += dt[1]
 
@@ -152,28 +156,20 @@ class Pack(Mem):
         super().__init__(name, mem, memstart, span)
         self._id = hash(args + tuple([memstart, span]))
         self.items = {}
-        self.sav = self._from_cache()
-        if self.sav:
+        sav = CACHE.get(self.name, self._id)
+        if not sav:
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
             CACHE.push(self.name, {k: {attr: val for attr, val in v.__dict__.items() if attr not in ('memref', 'buf')} for k, v in self.items.items()}, self._id)
+        else:
+            for k, d in sav.items():
+                self.items[k] = Memitem.from_dict(d, self)
 
     def __str__(self):
         return '\n'.join(str(v) for v in self.items.values())
 
-    def __getitem__(self, item):
-        return self.items[item]
-
-    def __setitem__(self, key, value):
-        self.items[key].ch_val(value)
-    
-    def _from_cache(self):
-        r = CACHE.get(self.name, self._id)
-        if r:
-            for key, value in r.items():
-                self.items.update({key: Memitem.from_dict(value, self)})
-            return False
-        return True
+    def __getitem__(self, k):return self.items[k]
+    def __setitem__(self, k, v): self.items[k].ch_val(v)
 
     def _order_items(self):
         """
@@ -216,6 +212,9 @@ class Pack(Mem):
         super().post_all()
 
 class Memitem:
+    #TODO: this class doesn't neet to have a buffer, it can write directly to memref, or pack_into
+    #post all can alost just be the method in Mem
+
     __slots__ = ('indx','name','length','bin','pack_format','bit_pos','byte_pos','memref','buf','mask')
     @classmethod
     def from_dict(cls,d, reg):
