@@ -1,8 +1,7 @@
-import struct, json, uctypes, binascii
-
-#peut-être: sous-classes pour arguments en ordre de déclaration
+import struct, json, uctypes
 
 cache_f = 'memcache.json'
+
 class RegCache:
     """
     manages saving and loading of memory cache to a JSON file
@@ -22,16 +21,16 @@ class RegCache:
 
     def get(self, nm, h):
         self._ld()
-        if nm in self.cache and self.cache[nm]['ID'] == h:
+        if nm in self.cache and self.cache[nm]['*HSH'] == h:
             r = self.cache[nm].copy()
-            r.pop('ID', None)
+            r.pop('*HSH', None)
             return r
         return False
-    
-    def push(self, name, value, id):
+
+    def push(self, name, value, hsh):
         self._ld()
         self.cache[name] = value.copy()
-        self.cache[name]['ID'] = id
+        self.cache[name]['*HSH'] = hsh
         with open(self.fnm, 'w') as f:
             json.dump(self.cache, f)
 
@@ -39,7 +38,7 @@ CACHE = RegCache(cache_f)
 
 def clear_cache():
     CACHE.cache = None
-    
+
 def delete_cache():
     import os
     os.remove(cache_f)
@@ -49,19 +48,19 @@ class Mem:
     Base class for memory-mapped registers that manages a memory buffer.
     This avoids breaking micropython when modifying memory directly.
     """
-    def __init__(self, name, mem, memstart, span):
+    def __init__(self, name, mem, offset, span):
         self.name = name
         self.mem = mem
-        self.memstart = memstart
+        self.memstart = offset
         self.span = span
-        self.buf = mem[memstart:memstart + span]
+        self.buf = mem[offset:offset + span]
 
     def post_all(self):
         # Dans le fond, c'est juste bon pour struct
         # Pour pack, chaque item écrit dans mem directement
         self.mem[self.memstart:self.memstart + self.span] = self.buf
         self.ld_buf()
-    
+
     def ld_buf(self):
         self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
 
@@ -70,14 +69,14 @@ class Struct(Mem):
     This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
     Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
     """
-    def __init__(self, name, mem, memstart, *args, span=32):
-        super().__init__(name, mem, memstart, span)
-        self._id = hash(args + tuple([memstart, span]))
+    def __init__(self, name, mem, offset, *args, span=32):
+        super().__init__(name, mem, offset, span)
+        self._hsh = hash(args + tuple([offset, span]))
         self.layout = {}
-        sav =  CACHE.get(self.name, self._id)
+        sav =  CACHE.get(self.name, self._hsh)
         if not sav:
             self._parse_args(args)
-            CACHE.push(self.name, self.layout, self._id)
+            CACHE.push(self.name, self.layout, self._hsh)
         else:
             self.layout = sav
             for k, v in self.layout.items():
@@ -100,8 +99,7 @@ class Struct(Mem):
         return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
 
     def _parse_args(self, ar):
-        bit_pos = 0
-        byte_pos = 0
+        bit_pos, byte_pos = 0, 0
         binl=[]
         l =[]
         for args in ar:
@@ -124,15 +122,15 @@ class Struct(Mem):
             # name, length, bin, format
             if dt[3] == uctypes.ARRAY:
                 self.layout.update({dt[0]: (byte_pos | dt[3], dt[1] | uctypes.UINT8)})
+                byte_pos += dt[1]
             else:
                 self.layout.update({dt[0]: (byte_pos | dt[3])})
-            byte_pos += dt[1]
+                byte_pos = byte_pos + (2 ** ((dt[3] >> 28) & 0xF)) * dt[1] if dt[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if dt[3] is uctypes.FLOAT32 else 8
 
     @staticmethod
     def _ngst(name, span, *rst):
         lr = len(rst)
-        bn = False
-        fmt = False
+        bn, fmt = False, False
         if lr == 2:
             bn, fmt = rst
         if lr == 1:
@@ -152,25 +150,23 @@ class Pack(Mem):
     Pythonic class that manages memory-mapped registers with individual items.
     Can be a better choice when uctypes.struct is too rigid.
     """
-    def __init__(self, name, mem, memstart, *args, span = 32):
-        super().__init__(name, mem, memstart, span)
-        self._id = hash(args + tuple([memstart, span]))
+    def __init__(self, name, mem, offset, *args, span = 32):
+        super().__init__(name, mem, offset, span)
+        self._hsh = hash(args + tuple([offset, span]))
         self.items = {}
-        sav = CACHE.get(self.name, self._id)
+        sav = CACHE.get(self.name, self._hsh)
         if not sav:
             self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
             self._order_items()
             CACHE.push(self.name, {
-                k: {attr: (binascii.hexlify(val) if attr == "inreg" else val) for attr, val in v.__dict__.items() if
-                    attr not in ("memref", "buf")} for k, v in self.items.items()}, self._id)
+                k: {attr: (int.from_bytes(val, 'big') if attr == "inreg" else val) for attr, val in v.__dict__.items() if
+                    attr not in ("memref", "buf")} for k, v in self.items.items()}, self._hsh)
         else:
             for k, d in sav.items():
                 self.items[k] = Memitem.from_dict(d, self)
 
-    def __str__(self):
-        return '\n'.join(str(v) for v in self.items.values())
-
-    def __getitem__(self, k):return self.items[k]
+    def __str__(self): return '\n'.join(str(v) for v in self.items.values())
+    def __getitem__(self, k): return self.items[k]
     def __setitem__(self, k, v): self.items[k].ch_val(v)
 
     def _order_items(self):
@@ -178,44 +174,26 @@ class Pack(Mem):
             This function ensures that all items stay in the same order every time
             It also makes it very easy to combine bits with bytes
         """
-        word_cursor, bit_cursor = 0, 0
-        # Process binary items first
+        wdcsr, bt_csr = 0, 0
+        # binary items
         for itm in sorted((i for i in self.items.values() if i.inreg[0] & (1 <<7)), key=lambda obj: obj.indx):
-            if bit_cursor >= 8:
-                word_cursor += 1
-                bit_cursor %= 8
-            itm.inreg[3] = word_cursor
-            itm.inreg[0] |= bit_cursor & ((1 << 6)-1)
-            itm.mask = 1 << bit_cursor
-            bit_cursor += itm.inreg[2]
+            if bt_csr >= 8:
+                wdcsr += 1
+                bt_csr %= 8
+            itm.inreg[3] = wdcsr
+            itm.inreg[0] |= bt_csr & ((1 << 6)-1)
+            itm.mask = 1 << bt_csr
+            bt_csr += itm.inreg[2]
             itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + 1]
-            itm.buf = itm.raw_val
-        # If bits are not aligned, move to next byte
-        if bit_cursor > 0:
-            word_cursor += 1
-            bit_cursor = 0
-        # Process non-binary items
+        if bt_csr > 0:
+            wdcsr += 1
+        # Non-binary items
         for itm in sorted((i for i in self.items.values() if not i.inreg[0] & (1<<7)), key=lambda obj: obj.indx):
-            itm.inreg[3] = word_cursor
-            word_cursor += (2**(itm.inreg[0]>>5)&0b11)*itm.inreg[2]
+            itm.inreg[3] = wdcsr
+            wdcsr += (2 ** ((itm.inreg[0] >> 5) & 0b11)) * itm.inreg[2]
             itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + itm.inreg[2]*(1 <<((itm.inreg[0] >>5)&0b11))]
-            itm.buf = itm.raw_val
-
-    def post_all(self):
-        for v in self.items.values():
-            if v.inreg[0] & 1 << 7 :
-                base_word = v.memref[0]
-                new_w = base_word | v.mask if v.buf == 1 else base_word & ~v.mask
-                v.memref[:] = struct.pack('B', new_w)
-            else:
-                if len(v.memref) != len(bytes(v.buf)):
-                    v.buf = v.buf + b'\x00' * (len(v.memref) - len(v.buf))  # Adjust the length of v.buf
-                v.memref[:] = bytes(v.buf)
-        super().post_all()
 
 class Memitem:
-    #TODO: this class doesn't neet to have a buffer, it can write directly to memref, or pack_into
-    #post all can alost just be the method in Mem
     # BITPOS  = 5 BITS : inreg[0], bit 0-4
     # BIN = 1 BIT : inreg[0], bit 7
     # PACKFMT =  8 BITS: inreg[1]
@@ -223,16 +201,15 @@ class Memitem:
     # LENGTH = 8 BITS : inreg[2]
     # BYTEPOS = 8 BITS : inreg[3]
 
-    __slots__ = ('indx','name','length','bin','pack_format','memref','buf','mask', 'inreg')
+    __slots__ = ('indx','name','length','pack_format','memref','mask', 'inreg', 'bin')
     @classmethod
     def from_dict(cls,d, reg):
         obj = cls(d['indx'], d['name'], 0, inreg=d['inreg'])
         obj.length = obj.inreg[2]
         obj.memref = memoryview(reg.buf)[obj.inreg[3]:obj.inreg[3] + (1 if (obj.inreg[0] & (1<<7)) else obj.inreg[2]*2**((obj.inreg[0]>>5)&0b11))]
-        obj.buf = obj.raw_val
         return obj
 
-    def __init__(self,indx, name, lenght, bin = False, pack_format=False, inreg= None):
+    def __init__(self,indx, name, length, bin = False, pack_format=False, inreg= None):
         self.indx = indx
         self.name = name
         if not inreg:
@@ -246,18 +223,17 @@ class Memitem:
             try:
                 self.inreg[0] |= ((len(struct.pack(chr(self.inreg[1]), 0)) >> 1) & 3) << 5
             except TypeError:
-                self.inreg[0] |= ((len(struct.pack(chr(self.inreg[1]), 'B')) >> 1) & 3) << 5
+                pass
 
-            self.inreg[2] = lenght
+            self.inreg[2] = length
         else:
-            self.inreg = binascii.unhexlify(inreg)
+            self.inreg = inreg.to_bytes(4, 'big')
         self.memref = None
         self.mask = 0
-        self.buf = 0 # Set to raw_val in Memreg
 
     @property
-    def value(self): # parsing values here makes it less expensive to call
-        return struct.unpack(chr(self.inreg[1]), bytes(self.memref))[0] if self.inreg != ord('B') else bytes(self.memref) if not self.bin else bytes(self.memref)[0] >> self.bit_pos & 1
+    def value(self):
+        return struct.unpack(chr(self.inreg[1]), bytes(self.memref)) if self.inreg[1] != ord('B') else bytes(self.memref) if not self.inreg[0] & (1<<7) else (bytes(self.memref)[0] >> (self.inreg[0] & 0b11111)) & 1
 
     @property
     def raw_val(self):
@@ -266,26 +242,70 @@ class Memitem:
     def __str__(self):
         return f'{self.name}: \n\t index = {self.indx}\n\t val ={self.value}\n\t byte_pos = {self.inreg[3]}\n\t bin = {bool(self.inreg[0] >> 7)}\n\t bit_pos = {self.inreg[0]&0b11111}'
 
-    def reset(self):
-        self.buf = bytearray([0x00] * 2**((self.inreg[0]>>5) & 0b11)*self.inreg[2]) if not self.inreg[0] & (1<<7) else 0
-
     def ch_val(self, new_val):
-        self.reset()
-        if self.inreg[0] & (1<<7):
-            self.buf = new_val & ((1 << self.inreg[1])-1)
-        elif isinstance(new_val, (bytes, bytearray)):
-            self.buf[:] = new_val
-        elif isinstance(new_val, (str)):
-            self.buf[:] = str(new_val).encode()
-        elif self.inreg[1] != ord('B'):
-            self.buf[:] = struct.pack(chr(self.inreg[1])*self.inreg[2], new_val)
+        if self.inreg[0] & (1<<7): # Binary
+            self.memref[:] = bytearray(self.memref) | self.mask if new_val else bytearray(self.memref) &~ self.mask
+        elif isinstance(new_val, (bytes, bytearray, str)):
+            new_val = new_val.encode() if isinstance(new_val, str) else new_val
+            if len(self.memref) > len(new_val):
+                new_val = new_val + b'\x00' * (len(self.memref) - len(new_val))  # Adjust the length of v.buf
+            self.memref[:] = new_val
+        else:
+            self.memref[:] = struct.pack(chr(self.inreg[1])*self.inreg[2], new_val)
 
     def toggle(self):
         if not (self.inreg[0] >> 7) & 1:
             raise AttributeError('item is not defined as binary, cannot toggle!')
         if self.inreg[2] >1:
             raise ValueError("item's length is superior to 1, cannot toggle")
-        self.buf = self.raw_val ^ 1
+        self.memref[:] = bytes([self.memref[0] ^ self.mask])
+
+class OrderedStruct(Struct):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _parse_args(self, ar):
+        bit_pos, byte_pos = 0, 0
+        for args in ar:
+            args = self._ngst(*args) # name, span, bn, fmt
+            if args[2]: # if binary
+                self.layout.update({args[0]: byte_pos | bit_pos << uctypes.BF_POS | args[1] << uctypes.BF_LEN | uctypes.BFUINT8})
+                bit_pos += args[1]
+                if bit_pos >= 8:
+                    byte_pos += bit_pos // 8
+                    bit_pos = bit_pos % 8
+            else:
+                if bit_pos > 0:
+                    byte_pos += 1
+                if args[3] == uctypes.ARRAY:
+                    self.layout.update({args[0]: (byte_pos | args[3], args[1] | uctypes.UINT8)})
+                    byte_pos+= args[1]
+                else:
+                    self.layout.update({args[0]: (byte_pos | args[3])})
+                    byte_pos = byte_pos + (2 ** ((args[3] >> 28) & 0xF)) * args[1] if args[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if args[3] is uctypes.FLOAT32 else 8
+
+class OrderedPack(Pack):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _order_items(self):
+        wdcsr, bt_csr = 0, 0
+        for itm in sorted((i for i in self.items.values()), key=lambda obj: obj.indx):
+            # binary items
+            if itm.inreg[0] & (1 << 7):
+                if bt_csr >= 8:
+                    wdcsr += 1
+                    bt_csr %= 8
+                itm.inreg[3] = wdcsr
+                itm.inreg[0] |= bt_csr & ((1 << 6) - 1)
+                itm.mask = 1 << bt_csr
+                bt_csr += itm.inreg[2]
+                itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + 1]
+            else:
+                # Non-binary items
+                itm.inreg[3] = wdcsr + 1 if bt_csr > 0 else wdcsr # if the bits are not aligned
+                wdcsr += (2 ** ((itm.inreg[0] >> 5) & 0b11)) * itm.inreg[2]
+                itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + itm.inreg[2] * (1 << ((itm.inreg[0] >> 5) & 0b11))]
 
 if __name__ == "__main__":
     import os
@@ -303,7 +323,7 @@ if __name__ == "__main__":
 
     print(mimi)
     m = bytearray(64)
-    nvim = Struct('nvim', m, 0,
+    nvim = OrderedStruct('nvim', m, 0,
                   ('id', 2, False, False),
                   ('flags', 1, False, False),
                   ('bit1', 1, True, None),
