@@ -1,4 +1,4 @@
-# Memreg - Micropython Memory management library
+# Memreg - Micropython Memory-mapped registers library
 
 Memreg is a library I developed after remarking that I kept having to make the same functions everytime I needed to manage
 sessions or memory that has to persist during deepsleep or power cycles. Since most microcontrollers have a limited amount
@@ -21,7 +21,8 @@ register.post_all()
 
 print(f'Header :{memory[0:16]} \n\rregister : {memory[16:]}')
 ```
->[!WARNING] if the memory bytearray is not big enough for all the arguments, it won't throw an error, Micropython on you microcontroller will just crashé
+>[!WARNING] 
+> If the memory bytearray is not big enough for all the arguments, it won't throw an error, Micropython on you microcontroller will just crashé
 
 ## memregs.Struct
 This class is based un uctypes.struct. It's very very fast, and it's a better choice for many items, and small updates. be aware that it's very fickle, and it may crash micropython if there's an error in your code.
@@ -31,7 +32,8 @@ memregs.Struct(name = '', mem = bytearray(), offset = 0, args = (name = '', span
 `name` [*str*] : name
 
 `mem` [*obj with buffre protocol*] : most likely a byte array or a memory location like nvm or deepsleep memory
->[!NOTE] every memregs class uses bytearray buffer to prevent crashing you microcontroller when changing individual values
+>[!NOTE] 
+> Every memregs class uses bytearray buffer to prevent crashing you microcontroller when changing individual values
 
 `offset` [*int*] Where the first byte of the memory array is
 
@@ -56,12 +58,14 @@ This class is based on struct.pack/unpack. It's faster at changing many long val
 ```python
 memregs.Pack(name = 'name', mem = bytearray(), offset = 0, args = (name = '', span = 1, bin = True, format = 'B'), span = 32 )
 ```
->[!NOTE] This class is a bit slower in general, but is easier to debug
+>[!NOTE] 
+> This class is a bit slower in general, but is easier to debug
 
 `name` [*str*] : name
 
 `mem` [*obj with buffre protocol*] : most likely a byte array or a memory location like nvm or deepsleep memory
->[!NOTE] every memregs class uses bytearray buffer to prevent crashing you microcontroller when changing individual values
+>[!NOTE] 
+> Every memregs class uses bytearray buffer to prevent crashing you microcontroller when changing individual values
 
 `offset` [*int*] Where the first byte of the memory array is
 
