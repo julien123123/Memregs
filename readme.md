@@ -1,4 +1,4 @@
-# Memreg - Micropython Memory-mapped registers library
+# Memregs - Micropython Memory-mapped registers library
 
 Memreg is a library I developed after remarking that I kept having to make the same functions everytime I needed to manage
 sessions or memory that has to persist during deepsleep or power cycles. Since most microcontrollers have a limited amount
