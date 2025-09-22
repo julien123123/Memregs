@@ -1,6 +1,6 @@
-import struct, json, uctypes
+import struct,uctypes
 
-cache_f = 'memcache.json'
+cache_f = 'memcache.txt'
 
 class RegCache:
     """
@@ -14,8 +14,9 @@ class RegCache:
         if self.cache is not None:
             return
         try:
-            with open(self.fnm, 'r') as f:
-                self.cache = json.load(f)
+            with open(self.fnm, 'rb') as f:
+                s = f.read().decode()
+                self.cache = eval(s)
         except OSError:
             self.cache = {}
 
@@ -31,8 +32,8 @@ class RegCache:
         self._ld()
         self.cache[name] = value.copy()
         self.cache[name]['*HSH'] = hsh
-        with open(self.fnm, 'w') as f:
-            json.dump(self.cache, f)
+        with open(self.fnm, 'wb') as f:
+            f.write(repr(self.cache).encode())
 
 CACHE = RegCache(cache_f)
 
@@ -79,9 +80,6 @@ class Struct(Mem):
             CACHE.push(self.name, self.layout, self._hsh)
         else:
             self.layout = sav
-            for k, v in self.layout.items():
-                if isinstance(v, list):
-                    self.layout[k]= tuple(v) # because json saves tuples as lists and it creates problems with uctypes.layout
         self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
 
     def __getitem__(self, it):
@@ -98,6 +96,7 @@ class Struct(Mem):
     def __str__(self):
         return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
 
+    @micropython.native
     def _parse_args(self, ar):
         bit_pos, byte_pos = 0, 0
         binl=[]
@@ -169,6 +168,7 @@ class Pack(Mem):
     def __getitem__(self, k): return self.items[k]
     def __setitem__(self, k, v): self.items[k].ch_val(v)
 
+    @micropython.native
     def _order_items(self):
         """
             This function ensures that all items stay in the same order every time
@@ -207,6 +207,7 @@ class Memitem:
         obj = cls(d['indx'], d['name'], 0, inreg=d['inreg'])
         obj.length = obj.inreg[2]
         obj.memref = memoryview(reg.buf)[obj.inreg[3]:obj.inreg[3] + (1 if (obj.inreg[0] & (1<<7)) else obj.inreg[2]*2**((obj.inreg[0]>>5)&0b11))]
+        obj.mask = 1 << (obj.inreg[0] & 0b11111)
         return obj
 
     def __init__(self,indx, name, length, bin = False, pack_format=False, inreg= None):
@@ -242,9 +243,10 @@ class Memitem:
     def __str__(self):
         return f'{self.name}: \n\t index = {self.indx}\n\t val ={self.value}\n\t byte_pos = {self.inreg[3]}\n\t bin = {bool(self.inreg[0] >> 7)}\n\t bit_pos = {self.inreg[0]&0b11111}'
 
+    @micropython.native
     def ch_val(self, new_val):
         if self.inreg[0] & (1<<7): # Binary
-            self.memref[:] = bytearray(self.memref) | self.mask if new_val else bytearray(self.memref) &~ self.mask
+            self.memref[:] = bytes([self.memref[0] | self.mask]) if new_val else bytes([self.memref[0] &~ self.mask])
         elif isinstance(new_val, (bytes, bytearray, str)):
             new_val = new_val.encode() if isinstance(new_val, str) else new_val
             if len(self.memref) > len(new_val):
@@ -273,7 +275,7 @@ class OrderedStruct(Struct):
                 bit_pos += args[1]
                 if bit_pos >= 8:
                     byte_pos += bit_pos // 8
-                    bit_pos = bit_pos % 8
+                    bit_pos %= 8
             else:
                 if bit_pos > 0:
                     byte_pos += 1
