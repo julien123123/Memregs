@@ -2,8 +2,8 @@ import machine, time, os, memregs
 
 class RTCWrapper:
     # This wrapper makes micropython's implementation of the ESP-32's RTC memory compatible with memregs classes as you
-    # need to use the memory() function to record and read from it. Circuitpython's version alarm.memory doesn't need
-    # this wrapper.
+    # need to use the memory() function to record and read from it. Circuitpython's version alarm.sleep_memory doesn't
+    # need this wrapper.
 
     def __init__(self, sz):
         self._rtc = machine.RTC().memory
@@ -52,7 +52,9 @@ boot.irq(flag_toggle, machine.Pin.IRQ_FALLING)
 
 rtc = RTCWrapper(16)
 
-values = memregs.Struct('values', rtc, 0, ('REFRESH', 1), ('MAGIC', 4, 'ARRAY'), ('FLAG', 1, True), ('INIT_TIME', 1, 'UINT16'), ('READINGS', 5, 'ARRAY'), span=16)
+# Items structure ('NAME', len, bin = False, format = 'UINT8') The format is the same as uctypes formats
+values = memregs.Struct('values', rtc, 0, ('REFRESH', 1), ('MAGIC', 4, 'ARRAY'), ('FLAG', 1, True),
+                        ('INIT_TIME', 1, 'UINT16'), ('READINGS', 5, 'ARRAY'), span=16)
 
 if values['MAGIC'] != b'CAFE':
     values['INIT_TIME'] = time.time()
@@ -66,7 +68,7 @@ for b in values['READINGS']:
     st += '.'*(b//51+1)
     st += '\n'
 
-print(f"[RANDOM GRAPH]\n{st}")
+print(f"\n[RANDOM GRAPH]\n{st}")
 print(f'Number of times this file has run: {values['REFRESH']} | First init time: {time.localtime(values['INIT_TIME'])}')
 print(f'FLAG = {values['FLAG']}')
 values['REFRESH'] += 1

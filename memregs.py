@@ -54,7 +54,8 @@ class Mem:
         self.mem = mem
         self.memstart = offset
         self.span = span
-        self.buf = mem[offset:offset + span]
+        self.buf = bytearray(span)
+        self.ld_buf()
 
     def post_all(self):
         # Dans le fond, c'est juste bon pour struct
