@@ -42,19 +42,31 @@ def flag_toggle(button):
     # pin as wake_on_ext and detect the wake_reason and raise the flag if it was wake_on_ext. This is useful if you have
     # a device running on batteries, and you want to use a button.
 
+def pretend_sensor_readings_FIFO(ar):
+    tmp = ar[1:]
+    tmp.append(os.urandom(1)[0]) # Let's say this would be a sensor reading, so that your device remembers the last 5
+    ar[:] = tmp
+
 # That way, if you rename this file "main.py", you should be able to stop it from looping by pressing the boot button
 boot.irq(flag_toggle, machine.Pin.IRQ_FALLING)
 
 rtc = RTCWrapper(16)
 
-values = memregs.Struct('values', rtc, 0, ('REFRESH', 1), ('MAGIC', 4, 'ARRAY'), ('FLAG', 1, True), ('INIT_TIME', 1, 'UINT16'), ('SEED', 2, 'ARRAY'), span=16)
+values = memregs.Struct('values', rtc, 0, ('REFRESH', 1), ('MAGIC', 4, 'ARRAY'), ('FLAG', 1, True), ('INIT_TIME', 1, 'UINT16'), ('READINGS', 5, 'ARRAY'), span=16)
 
 if values['MAGIC'] != b'CAFE':
     values['INIT_TIME'] = time.time()
     values['MAGIC'] = b'CAFE'
-    values['SEED'] = os.urandom(2)
 
 print(rtc)
+pretend_sensor_readings_FIFO(values['READINGS'])
+
+st = ''
+for b in values['READINGS']:
+    st += '.'*(b//51+1)
+    st += '\n'
+
+print(f"[RANDOM GRAPH]\n{st}")
 print(f'Number of times this file has run: {values['REFRESH']} | First init time: {time.localtime(values['INIT_TIME'])}')
 print(f'FLAG = {values['FLAG']}')
 values['REFRESH'] += 1
