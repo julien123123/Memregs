@@ -136,7 +136,7 @@ class Struct(Mem):
             if type(*rst) == bool:
                 bn = rst[0]
             else:
-                fmt = rst
+                fmt = rst[0]
         fmt = uctypes.UINT8 if not fmt else getattr(uctypes, fmt)
         return name, span, bn, fmt
 
