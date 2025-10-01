@@ -1,5 +1,10 @@
 import memregs, esp32, time, sys
 
+"""
+This File writes config registers in the esp32's NVS memory which is like writing directly to the flash memory. Remember
+that if you need to change those values many times, this is not the memory to use.
+"""
+
 class NVSreg(memregs.Struct):
     """ This class interfaces with memregs and ESP32's NVS memory"""
     nvs = esp32.NVS('reg')
@@ -13,8 +18,8 @@ class NVSreg(memregs.Struct):
         try:
             NVSreg.nvs.get_blob(self.name, self.buf)
         except OSError:
-            # If the memory doesn't already exist return an empty buf
-            self.buf = bytearray([0x00]*self.span)
+            # If the memory doesn't already exist, just use the empty buffer
+            pass
 
 config = NVSreg('config', bytearray(32), 0, ('favorite color', 10, 'ARRAY'), ('LANGUAGE', 2, 'ARRAY'),
                 ('INIT_DATE', 1, 'UINT32'), ('PLATFORM', 6, 'ARRAY'), ('INITED', 1, True))

@@ -1,4 +1,4 @@
-import struct,uctypes
+import struct,sys
 
 cache_f = 'memcache.txt'
 
@@ -65,84 +65,87 @@ class Mem:
 
     def ld_buf(self):
         self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
-
-class Struct(Mem):
-    """
-    This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
-    Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
-    """
-    def __init__(self, name, mem, offset, *args, span=32):
-        super().__init__(name, mem, offset, span)
-        self._hsh = hash(args + tuple([offset, span]))
-        self.layout = {}
-        sav =  CACHE.get(self.name, self._hsh)
-        if not sav:
-            self._parse_args(args)
-            CACHE.push(self.name, self.layout, self._hsh)
-        else:
-            self.layout = sav
-        self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
-
-    def __getitem__(self, it):
-        return getattr(self.struct, it)
-
-    def __setitem__(self, key, value):
-        if type(value) in (str, bytes, bytearray):
-            value = value.encode('utf-8') if type(value) is str else value
-            for i, b in enumerate(value):
-                self[key][i] = b
-        else:
-            setattr(self.struct, key, value)
-
-    def __str__(self):
-        return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
-
-    @micropython.native
-    def _parse_args(self, ar):
-        bit_pos, byte_pos = 0, 0
-        binl=[]
-        l =[]
-        for args in ar:
-            args = self._ngst(*args)
-            if args[2]:
-                binl.append(args)
+try:
+    import uctypes
+    class Struct(Mem):
+        """
+        This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
+        Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
+        """
+        def __init__(self, name, mem, offset, *args, span=32):
+            super().__init__(name, mem, offset, span)
+            self._hsh = hash(args + tuple([offset, span]))
+            self.layout = {}
+            sav =  CACHE.get(self.name, self._hsh)
+            if not sav:
+                self._parse_args(args)
+                CACHE.push(self.name, self.layout, self._hsh)
             else:
-                l.append(args)
-        for dt in binl:
-            name, ln, *rest = dt
-            self.layout.update({name: byte_pos | bit_pos << uctypes.BF_POS | ln << uctypes.BF_LEN | uctypes.BFUINT8})
-            bit_pos += ln
-            if bit_pos >= 8:
-                byte_pos += bit_pos // 8
-                bit_pos = bit_pos % 8
-        if bit_pos > 0:
-            byte_pos += 1
-            bit_pos = 0
-        for dt in l:
-            # name, length, bin, format
-            if dt[3] == uctypes.ARRAY:
-                self.layout.update({dt[0]: (byte_pos | dt[3], dt[1] | uctypes.UINT8)})
-                byte_pos += dt[1]
-            else:
-                self.layout.update({dt[0]: (byte_pos | dt[3])})
-                byte_pos = byte_pos + (2 ** ((dt[3] >> 28) & 0xF)) * dt[1] if dt[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if dt[3] is uctypes.FLOAT32 else 8
+                self.layout = sav
+            self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
 
-    @staticmethod
-    def _ngst(name, span, *rst):
-        lr = len(rst)
-        bn, fmt = False, False
-        if lr == 2:
-            bn, fmt = rst
-        if lr == 1:
-            if type(*rst) == bool:
-                bn = rst[0]
-            else:
-                fmt = rst[0]
-        fmt = uctypes.UINT8 if not fmt else getattr(uctypes, fmt)
-        return name, span, bn, fmt
+        def __getitem__(self, it):
+            return getattr(self.struct, it)
 
-    def toggle(self, key):
-        self[key] = self[key] ^ 1
+        def __setitem__(self, key, value):
+            if type(value) in (str, bytes, bytearray):
+                value = value.encode('utf-8') if type(value) is str else value
+                for i, b in enumerate(value):
+                    self[key][i] = b
+            else:
+                setattr(self.struct, key, value)
+
+        def __str__(self):
+            return '\n'.join(str(v)+": "+str(self[v]) for v in self.layout.keys())
+
+        #@micropython.native
+        def _parse_args(self, ar):
+            bit_pos, byte_pos = 0, 0
+            binl=[]
+            l =[]
+            for args in ar:
+                args = self._ngst(*args)
+                if args[2]:
+                    binl.append(args)
+                else:
+                    l.append(args)
+            for dt in binl:
+                name, ln, *rest = dt
+                self.layout.update({name: byte_pos | bit_pos << uctypes.BF_POS | ln << uctypes.BF_LEN | uctypes.BFUINT8})
+                bit_pos += ln
+                if bit_pos >= 8:
+                    byte_pos += bit_pos // 8
+                    bit_pos = bit_pos % 8
+            if bit_pos > 0:
+                byte_pos += 1
+                bit_pos = 0
+            for dt in l:
+                # name, length, bin, format
+                if dt[3] == uctypes.ARRAY:
+                    self.layout.update({dt[0]: (byte_pos | dt[3], dt[1] | uctypes.UINT8)})
+                    byte_pos += dt[1]
+                else:
+                    self.layout.update({dt[0]: (byte_pos | dt[3])})
+                    byte_pos = byte_pos + (2 ** ((dt[3] >> 28) & 0xF)) * dt[1] if dt[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if dt[3] is uctypes.FLOAT32 else 8
+
+        @staticmethod
+        def _ngst(name, span, *rst):
+            lr = len(rst)
+            bn, fmt = False, False
+            if lr == 2:
+                bn, fmt = rst
+            if lr == 1:
+                if type(*rst) == bool:
+                    bn = rst[0]
+                else:
+                    fmt = rst[0]
+            fmt = uctypes.UINT8 if not fmt else getattr(uctypes, fmt)
+            return name, span, bn, fmt
+
+        def toggle(self, key):
+            self[key] = self[key] ^ 1
+except ImportError:
+    pass
 
         
 class Pack(Mem):
@@ -169,7 +172,7 @@ class Pack(Mem):
     def __getitem__(self, k): return self.items[k]
     def __setitem__(self, k, v): self.items[k].ch_val(v)
 
-    @micropython.native
+    #@micropython.native
     def _order_items(self):
         """
             This function ensures that all items stay in the same order every time
@@ -235,16 +238,26 @@ class Memitem:
 
     @property
     def value(self):
-        return struct.unpack(chr(self.inreg[1]), bytes(self.memref)) if self.inreg[1] != ord('B') else bytes(self.memref) if not self.inreg[0] & (1<<7) else (bytes(self.memref)[0] >> (self.inreg[0] & 0b11111)) & 1
+        return (lambda v: v[0] if isinstance(v, tuple) and len(v) == 1 else v)(struct.unpack(chr(self.inreg[1]), bytes(self.memref))) if self.inreg[1] != ord('B') else (bytes(self.memref) if not self.inreg[0] & (1 << 7) else (bytes(self.memref)[0] >> (self.inreg[0] & 0b11111)) & 1)
+
+    @value.setter
+    def value(self, new_dt):
+        self.ch_val(new_dt)
 
     @property
     def raw_val(self):
         return bytes(self.memref) if not self.inreg[0] & (1<<7) else (bytes(self.memref)[0] >> (self.inreg[0] & 0b11111)) & 1
 
+    def __iadd__(self, other):
+        if self.inreg[2] is 1:
+            return self.value[0] + other
+        else:
+            raise TypeError("Cannot use += on non scalar values")
+
     def __str__(self):
         return f'{self.name}: \n\t index = {self.indx}\n\t val ={self.value}\n\t byte_pos = {self.inreg[3]}\n\t bin = {bool(self.inreg[0] >> 7)}\n\t bit_pos = {self.inreg[0]&0b11111}'
 
-    @micropython.native
+    #@micropython.native
     def ch_val(self, new_val):
         if self.inreg[0] & (1<<7): # Binary
             self.memref[:] = bytes([self.memref[0] | self.mask]) if new_val else bytes([self.memref[0] &~ self.mask])
@@ -262,30 +275,32 @@ class Memitem:
         if self.inreg[2] >1:
             raise ValueError("item's length is superior to 1, cannot toggle")
         self.memref[:] = bytes([self.memref[0] ^ self.mask])
+try:
+    class OrderedStruct(Struct):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
 
-class OrderedStruct(Struct):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def _parse_args(self, ar):
-        bit_pos, byte_pos = 0, 0
-        for args in ar:
-            args = self._ngst(*args) # name, span, bn, fmt
-            if args[2]: # if binary
-                self.layout.update({args[0]: byte_pos | bit_pos << uctypes.BF_POS | args[1] << uctypes.BF_LEN | uctypes.BFUINT8})
-                bit_pos += args[1]
-                if bit_pos >= 8:
-                    byte_pos += bit_pos // 8
-                    bit_pos %= 8
-            else:
-                if bit_pos > 0:
-                    byte_pos += 1
-                if args[3] == uctypes.ARRAY:
-                    self.layout.update({args[0]: (byte_pos | args[3], args[1] | uctypes.UINT8)})
-                    byte_pos+= args[1]
+        def _parse_args(self, ar):
+            bit_pos, byte_pos = 0, 0
+            for args in ar:
+                args = self._ngst(*args) # name, span, bn, fmt
+                if args[2]: # if binary
+                    self.layout.update({args[0]: byte_pos | bit_pos << uctypes.BF_POS | args[1] << uctypes.BF_LEN | uctypes.BFUINT8})
+                    bit_pos += args[1]
+                    if bit_pos >= 8:
+                        byte_pos += bit_pos // 8
+                        bit_pos %= 8
                 else:
-                    self.layout.update({args[0]: (byte_pos | args[3])})
-                    byte_pos = byte_pos + (2 ** ((args[3] >> 28) & 0xF)) * args[1] if args[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if args[3] is uctypes.FLOAT32 else 8
+                    if bit_pos > 0:
+                        byte_pos += 1
+                    if args[3] == uctypes.ARRAY:
+                        self.layout.update({args[0]: (byte_pos | args[3], args[1] | uctypes.UINT8)})
+                        byte_pos+= args[1]
+                    else:
+                        self.layout.update({args[0]: (byte_pos | args[3])})
+                        byte_pos = byte_pos + (2 ** ((args[3] >> 28) & 0xF)) * args[1] if args[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if args[3] is uctypes.FLOAT32 else 8
+except NameError:
+    pass
 
 class OrderedPack(Pack):
     def __init__(self, *args, **kwargs):
@@ -326,6 +341,7 @@ if __name__ == "__main__":
 
     print(mimi)
     m = bytearray(64)
+    '''
     nvim = OrderedStruct('nvim', m, 0,
                   ('id', 2, False, False),
                   ('flags', 1, False, False),
@@ -340,3 +356,4 @@ if __name__ == "__main__":
     nvim['value'] = 42
     nvim.post_all()
     print(nvim)
+    '''
