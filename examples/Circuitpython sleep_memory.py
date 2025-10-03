@@ -42,6 +42,5 @@ values['REFRESH'] += 1
 values['FLAG'] = 1 if values['REFRESH'].value[0] >=5 else 0
 values.post_all()
 
-time.sleep(1) # just to give you enough time to press the button
 led.value = False
 alarm.exit_and_deep_sleep_until_alarms(time_alarm) if not values['FLAG'].value else None

@@ -49,13 +49,13 @@ class Mem:
     Base class for memory-mapped registers that manages a memory buffer.
     This avoids breaking micropython when modifying memory directly.
     """
-    def __init__(self, name, mem, offset, span):
+    def __init__(self, name, mem, offset, span, auto_ld = True):
         self.name = name
         self.mem = mem
         self.memstart = offset
         self.span = span
         self.buf = bytearray(span)
-        self.ld_buf()
+        self.ld_buf() if auto_ld else None
 
     def post_all(self):
         # Dans le fond, c'est juste bon pour struct
@@ -299,6 +299,44 @@ try:
                     else:
                         self.layout.update({args[0]: (byte_pos | args[3])})
                         byte_pos = byte_pos + (2 ** ((args[3] >> 28) & 0xF)) * args[1] if args[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if args[3] is uctypes.FLOAT32 else 8
+
+
+    class IndexBinStruct(Struct):
+        def __init__(self, name, mem, offset, *args, span=32):
+            import machine
+            self._hsh = hash(args + tuple([offset, span]))
+
+            if span in (8, 16, 32):
+                self.fmt = f"BFUINT{span}"
+            else:
+                raise ValueError("span must be 8, 16 or 32")
+            span = span // 8  # for the buffer
+            Mem.__init__(self, name, mem, offset, span, False)
+            self.layout = {}
+            sav = CACHE.get(self.name, self._hsh)
+
+            if not sav:
+                for ar in args:
+                    # name, position, span
+                    self.layout.update(
+                        {ar[0]: 0 | (ar[1] << uctypes.BF_POS) | (ar[2] << uctypes.BF_LEN) | getattr(uctypes, self.fmt)})
+                CACHE.push(self.name, self.layout, self._hsh)
+            else:
+                self.layout = sav
+
+            self.buf_adr = uctypes.addressof(self.buf)
+            print('hey')
+            self.mmtd = machine.mem32 if span == 4 else machine.mem16 if span == 2 else machine.mem8
+            self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
+            self.ld_buf()
+
+        def post_all(self):
+            self.mmtd[self.mem + self.memstart] = self.mmtd[self.buf_adr]
+            self.ld_buf()
+
+        def ld_buf(self):
+            self.buf[:] = self.mmtd[self.mem + self.memstart].to_bytes(self.span, 'little')
+
 except NameError:
     pass
 
@@ -309,7 +347,7 @@ class OrderedPack(Pack):
     def _order_items(self):
         wdcsr, bt_csr = 0, 0
         for itm in sorted((i for i in self.items.values()), key=lambda obj: obj.indx):
-            # binary items
+            # binary items (name, position, span)
             if itm.inreg[0] & (1 << 7):
                 if bt_csr >= 8:
                     wdcsr += 1
@@ -330,30 +368,11 @@ if __name__ == "__main__":
     
     b = bytearray(os.urandom(32))
     nvm = memoryview(b)
-    nvam = Pack('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3), ('PLUS', 4), span =8)
+    nvam = Struct('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3, 'ARRAY'), ('PLUS', 4), span =8)
     mimi = Pack('mimi', nvm, 8, ('passw', 10), ('flag', 1, True), ('Nan', 4))
     nvam['SAC'] = 'IOU'
     nvam.post_all()
-    try:
-        print(nvam)
-    except TypeError:
-        pass
 
-    print(mimi)
-    m = bytearray(64)
-    '''
-    nvim = OrderedStruct('nvim', m, 0,
-                  ('id', 2, False, False),
-                  ('flags', 1, False, False),
-                  ('bit1', 1, True, None),
-                  ('bit2', 1, True, None),
-                  ('bit3', 1, True, None),
-                  ('mode', 4, True, None),
-                  ('value', 4, False, False),
-                  ('name', 16, False, 'ARRAY'))
-    
-    nvim['name'] = 'Julien'
-    nvim['value'] = 42
-    nvim.post_all()
-    print(nvim)
-    '''
+    ca = bytearray(4)
+    cca = uctypes.addressof(ca)
+    nim = IndexBinStruct('nim', cca, 0, ('allo', 0, 1), ('cl', 1, 1), ('pe', 4, 1), span = 32)
