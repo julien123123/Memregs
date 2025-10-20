@@ -325,7 +325,6 @@ try:
                 self.layout = sav
 
             self.buf_adr = uctypes.addressof(self.buf)
-            print('hey')
             self.mmtd = machine.mem32 if span == 4 else machine.mem16 if span == 2 else machine.mem8
             self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
             self.ld_buf()
