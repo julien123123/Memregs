@@ -6,7 +6,10 @@ tested all of them on both the NRF52840 Super Mini / Nice! Nano with the adafrui
 ## deepsleep()
 
 Similar to machine.deepsleep() on other ports. This function puts the NRF52 in system off mode. The power consumption will
-be very low, but in this mode, the RTC is completely shutdown
+be very low, but in this mode, the RTC is completely shutdown.
+
+>[!NOTE]
+> When waking up from System off, or deepsleep, machine.reset_cause() will be `16`.
 
 ## get_wake_pins()
 
@@ -41,6 +44,15 @@ they should almost be considered as permanent unless you know what you are doing
 
 - `n` register number form 0 to 31
 - `val` the value you want to put in the given register. It must be bytes or a bytearray of 4 8bit bytes.
+
+## mktime(time_tuple)
+This essentially converts a time.localtime() tuple into a micropython timestamp integer.
+
+- `time_tuple` a tuple in the format (year, month, mday, hour, minute, second, weekday, yearday)
+
+## localtime(seconds)
+This function converts a micropython timestamp integer into a time.localtime() tuple.
+- `seconds` a micropython timestamp integer
 
 ## SleepMemory Class
 

@@ -101,3 +101,37 @@ def burnin_uicr(n, val):
         mem32[adr] = int.from_bytes(val, 'little')
     else:
         raise OSError('Register not empty, can only write once')
+
+_md = b'\x00\x1f\x1c\x1f\x1e\x1f\x1e\x1f\x1f\x1e\x1f\x1e\x1f'
+
+def is_leap(y):
+    return y%4==0 and (y%100 or y%400==0)
+
+@micropython.native
+def mktime(t):
+    y,m,d,H,M,S = t[:6]
+    days = 365 * y + ((y - 1) >> 2) - (y - 1) // 100 + (y - 1) // 400 - 730484 + sum(_md[:m]) + (m > 2 and is_leap(y)) + d - 1
+    return days * 86400 + H * 3600 + M * 60 + S
+
+@micropython.native
+def localtime(s:int) -> object:
+    d,s = divmod(s,86400)
+    H,s = divmod(s,3600)
+    M,S = divmod(s,60)
+
+    y=2000
+    while True:
+        diy=366 if is_leap(y) else 365
+        if d<diy: break
+        d-=diy; y+=1
+
+    m=1
+    while True:
+        dim=_md[m]+(m==2 and is_leap(y))
+        if d<dim: break
+        d-=dim; m+=1
+
+    mday = d+1
+    yday = sum(_md[:m]) + mday + ((m>2) and is_leap(y))
+    wday = (5 + (mktime((y,m,mday,H,M,S,0,0))//86400)) % 7
+    return y,m,mday,H,M,S,wday,yday
