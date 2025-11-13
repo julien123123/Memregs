@@ -311,7 +311,7 @@ try:
             else:
                 raise ValueError("span must be 8, 16 or 32")
             span = span // 8  # for the buffer
-            Mem.__init__(self, name, mem, offset, span, False)
+            Mem.__init__(self, name, uctypes.addressof(mem), offset, span, False)
             self.layout = {}
             sav = CACHE.get(self.name, self._hsh)
 
