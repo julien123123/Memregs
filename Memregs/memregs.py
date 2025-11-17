@@ -311,7 +311,9 @@ try:
             else:
                 raise ValueError("span must be 8, 16 or 32")
             span = span // 8  # for the buffer
-            Mem.__init__(self, name, uctypes.addressof(mem), offset, span, False)
+            if isinstance(bytearray, mem):
+                mem = uctypes.addressof(mem)
+            Mem.__init__(self, name, mem, offset, span, False)
             self.layout = {}
             sav = CACHE.get(self.name, self._hsh)
 
@@ -326,7 +328,7 @@ try:
 
             self.buf_adr = uctypes.addressof(self.buf)
             self.mmtd = machine.mem32 if span == 4 else machine.mem16 if span == 2 else machine.mem8
-            self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
+            self.struct = uctypes.struct(self.buf_adr, self.layout, uctypes.LITTLE_ENDIAN)
             self.ld_buf()
 
         def post_all(self):
