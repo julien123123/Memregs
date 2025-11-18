@@ -18,13 +18,13 @@ def get_wake_pins():
 def set_sense_pin(p, wake_on_hi=True, twitch = False): # Sorry, I know, not very human-readable
     if p < 32:
         d = 0x50000524
-        r = 0x50000700 + p << 2
+        r = 0x50000700 + (p << 2)
         mem32[0x50000520] = 1 << p
     else:
         d = 0x50000824
-        r = 0x50000a00 + (p - 32) << 2
+        r = 0x50000a00 + ((p - 32) << 2)
         mem32[0x50000820] = 1 << (p - 32)
-    mem32[d] = 0
+    mem32[d] = 1
     mem32[r] = 0x20004 if wake_on_hi else 0x3000c if not twitch else 0x2000c
 
 class SleepMemory:

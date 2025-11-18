@@ -311,7 +311,7 @@ try:
             else:
                 raise ValueError("span must be 8, 16 or 32")
             span = span // 8  # for the buffer
-            if isinstance(bytearray, mem):
+            if isinstance(mem, bytearray):
                 mem = uctypes.addressof(mem)
             Mem.__init__(self, name, mem, offset, span, False)
             self.layout = {}
