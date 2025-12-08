@@ -27,6 +27,9 @@ turn on the internal pull up resistor, and wake up the device when the pin is lo
 if your script go into another mode if a condition is met.
 
 ## rtcmem()
+>[!WARNING]
+> After debugging my project kept resting for no reason, I found that putting values in this register was the culprit. 
+> I did not see it before because that behaviour wasn't happening when my microcontroller was connected to the REPL.
 
 This function reads the persistent memory of the NRF52 which only consists of 2 8bit bytes. Similar to the Esp32's
 machine.RTC().memory() if you don't enter parameters, the function will return what is in the memory, and if you give it

@@ -1,9 +1,11 @@
+import micropython
 from machine import mem32
 
-def deepsleep():
-    # mem32[0x4002752C]
-    # mem32[0x40027500] = 1 #seemed necessary for seeed xiao nrf, This de-activates the usb device. Decomment if
-    mem32[0x40000500] = 1
+@micropython.viper
+def deepsleep()->bool:
+    ptr32(0x4002752c)[0] = 1
+    ptr32(0x40027500)[0] = 1 #seemed necessary for
+    ptr32(0x40000500)[0] = 1
     return False # Will not return
 
 def get_wake_pins():
@@ -15,17 +17,22 @@ def get_wake_pins():
     mem32[0x50000820] = l1
     return pos
 
-def set_sense_pin(p, wake_on_hi=True, twitch = False): # Sorry, I know, not very human-readable
+@micropython.viper
+def set_sense_pin(p:int, wake_on_hi:bool=True, twitch:bool = False): # Sorry, I know, not very human-readable
+    # pin formula is ok, but the wake_on_hi bools don't seem to work
     if p < 32:
-        d = 0x50000524
-        r = 0x50000700 + (p << 2)
-        mem32[0x50000520] = 1 << p
+        d = ptr32(0x50000524)
+        r = ptr32(int(0x50000700) + (p << 2))
+        ptr32(0x50000520)[0] = 1 << p
     else:
-        d = 0x50000824
-        r = 0x50000a00 + ((p - 32) << 2)
-        mem32[0x50000820] = 1 << (p - 32)
-    mem32[d] = 1
-    mem32[r] = 0x20004 if wake_on_hi else 0x3000c if not twitch else 0x2000c
+        d = ptr32(0x50000824)
+        r = ptr32(int(0x50000a00) + ((p - 32) << 2))
+        ptr32(0x50000820)[0] = 1 << (p - 32)
+    d[0] = 0
+    r[0] = 0x20004 if wake_on_hi else 0x3000c if not twitch else 0x2000c
+
+def usb_connected():
+    return bool(mem32[0x40000438] & 1)
 
 class SleepMemory:
     def __init__(self, ram, sector):
@@ -75,6 +82,7 @@ class SleepMemory:
         sct_on = 1 << (16 + self.sector)
         mem32[adr] |= sct_on
 
+#******* WARNING! This function my cause a soft reset the used with the repl not connected *******
 def rtcmem(b = None):
     # Only 2 bytes available
     if b and isinstance(b, (bytearray, bytes))  and len(b) <= 2:
