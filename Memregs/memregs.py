@@ -1,5 +1,4 @@
 import struct,sys
-
 cache_f = 'memcache.txt'
 
 class RegCache:
@@ -22,7 +21,7 @@ class RegCache:
 
     def get(self, nm, h):
         self._ld()
-        if nm in self.cache and self.cache[nm]['*HSH'] == h:
+        if nm in self.cache and (h is False or self.cache[nm]['*HSH'] == h):
             r = self.cache[nm].copy()
             r.pop('*HSH', None)
             return r
@@ -49,13 +48,15 @@ class Mem:
     Base class for memory-mapped registers that manages a memory buffer.
     This avoids breaking micropython when modifying memory directly.
     """
-    def __init__(self, name, mem, offset, span, auto_ld = True):
+    def __init__(self, name, mem, offset, span, auto_ld = True, lock = False, chksm = False):
         self.name = name
         self.mem = mem
         self.memstart = offset
         self.span = span
         self.buf = bytearray(span)
         self.ld_buf() if auto_ld else None
+        self._lk = lock
+        self.chksm = chksm
 
     def post_all(self):
         # Dans le fond, c'est juste bon pour struct
@@ -72,23 +73,26 @@ try:
         This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
         Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
         """
-        def __init__(self, name, mem, offset, *args, span=32):
-            super().__init__(name, mem, offset, span)
-            self._hsh = hash(args + tuple([offset, span]))
+        def __init__(self, name, mem, offset, *args, span=32, lock = False):
+            super().__init__(name, mem, offset, span, lock)
             self.layout = {}
-            sav =  CACHE.get(self.name, self._hsh)
-            if not sav:
-                self._parse_args(args)
-                CACHE.push(self.name, self.layout, self._hsh)
+            if not lock:
+                self._hsh = hash(args + tuple([offset, span]))
+                sav = CACHE.get(self.name, self._hsh)
+                if not sav:
+                    self._parse_args(args)
+                    CACHE.push(self.name, self.layout, self._hsh)
+                else:
+                    self.layout = sav
             else:
-                self.layout = sav
+                self.layout = CACHE.get(self.name, False)
             self.struct = uctypes.struct(uctypes.addressof(self.buf), self.layout, uctypes.LITTLE_ENDIAN)
 
         def __getitem__(self, it):
             return getattr(self.struct, it)
 
         def __setitem__(self, key, value):
-            if type(value) in (str, bytes, bytearray):
+            if isinstance(value, (str, bytes, bytearray)):
                 value = value.encode('utf-8') if type(value) is str else value
                 for i, b in enumerate(value):
                     self[key][i] = b
@@ -153,18 +157,24 @@ class Pack(Mem):
     Pythonic class that manages memory-mapped registers with individual items.
     Can be a better choice when uctypes.struct is too rigid.
     """
-    def __init__(self, name, mem, offset, *args, span = 32):
-        super().__init__(name, mem, offset, span)
-        self._hsh = hash(args + tuple([offset, span]))
+    def __init__(self, name, mem, offset, *args, span = 32, lock = False):
+        super().__init__(name, mem, offset, span, lock)
         self.items = {}
-        sav = CACHE.get(self.name, self._hsh)
-        if not sav:
-            self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
-            self._order_items()
-            CACHE.push(self.name, {
-                k: {attr: (int.from_bytes(val, 'big') if attr == "inreg" else val) for attr, val in v.__dict__.items() if
-                    attr not in ("memref", "buf")} for k, v in self.items.items()}, self._hsh)
+        if not lock:
+            self._hsh = hash(args + tuple([offset, span]))
+            sav = CACHE.get(self.name, self._hsh)
+            if not sav:
+                self.items = {ar[0]: Memitem(i, *ar) for i, ar in enumerate(args)}
+                self._order_items()
+                CACHE.push(self.name, {
+                    k: {attr: (int.from_bytes(val, 'big') if attr == "inreg" else val) for attr, val in
+                        v.__dict__.items() if
+                        attr not in ("memref", "buf")} for k, v in self.items.items()}, self._hsh)
+            else:
+                for k, d in sav.items():
+                    self.items[k] = Memitem.from_dict(d, self)
         else:
+            sav = CACHE.get(self.name, False)
             for k, d in sav.items():
                 self.items[k] = Memitem.from_dict(d, self)
 
@@ -302,15 +312,15 @@ try:
 
 
     class IndexBinStruct(Struct):
-        def __init__(self, name, mem, offset, *args, span=32):
+        def __init__(self, name, mem, offset, *args, span=32, lock=False):
             import machine
-            self._hsh = hash(args + tuple([offset, span]))
+            self._hsh = hash(args + tuple([offset, span])) if not lock else False
 
             if span in (8, 16, 32):
                 self.fmt = f"BFUINT{span}"
             else:
                 raise ValueError("span must be 8, 16 or 32")
-            span = span // 8  # for the buffer
+            span = span >> 3  # for the buffer
             if isinstance(mem, bytearray):
                 mem = uctypes.addressof(mem)
             Mem.__init__(self, name, mem, offset, span, False)
