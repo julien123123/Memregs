@@ -54,18 +54,59 @@ class Mem:
         self.memstart = offset
         self.span = span
         self.buf = bytearray(span)
-        self.ld_buf() if auto_ld else None
         self._lk = lock
         self.chksm = chksm
+        self.ld_buf() if auto_ld else None
+
+    @property
+    def sm(self):
+        if self.chksm:
+            return self.buf[-2:]
+        else:
+            return False
 
     def post_all(self):
         # Dans le fond, c'est juste bon pour struct
         # Pour pack, chaque item écrit dans mem directement
+        if self.chksm:
+            h = self.getcsm()
+            self.buf[-2] = h >> 8
+            self.buf[-1] = h & 0xFF
         self.mem[self.memstart:self.memstart + self.span] = self.buf
-        self.ld_buf()
+        c = self.ld_buf()
+        return True if self.chksm and self.check(c) or not self.chksm else False
 
     def ld_buf(self):
         self.buf[:] = self.mem[self.memstart:self.memstart + self.span]
+        if self.chksm:
+            return self.sm
+        return False
+
+    def check(self, s):
+        c = self.getcsm()
+        if  isinstance(s, int) and c == s:
+            return True
+        if isinstance(s, bytes) and s == c.to_bytes(2, 'big'):
+            return True
+        if isinstance(s, bytearray) and bytes(s) == c.to_bytes(2, 'big'):
+            return True
+        return False
+
+    def getcsm(self):
+        return self.crc16(self.buf, len(self.buf))if not self.chksm else self.crc16(self.buf, len(self.buf)-2)
+
+    @staticmethod
+    @micropython.viper
+    def crc16(data: ptr8, length: int) -> int:
+        crc = 0xFFFF
+        for i in range(length):
+            crc ^= data[i]
+            for j in range(8):
+                if crc & 1:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+        return crc
 try:
     import uctypes
     class Struct(Mem):
@@ -73,8 +114,8 @@ try:
         This class dynamically creates and manages a memory-mapped structure using uctypes.struct.
         Structs can be fickle. Be sure that the memory area you give it is big enough otherwise it will crash micropython.
         """
-        def __init__(self, name, mem, offset, *args, span=32, lock = False):
-            super().__init__(name, mem, offset, span, lock)
+        def __init__(self, name, mem, offset, *args, span=32, lock = False, chksm = False):
+            super().__init__(name, mem, offset, span, True, lock, chksm)
             self.layout = {}
             if not lock:
                 self._hsh = hash(args + tuple([offset, span]))
@@ -131,6 +172,8 @@ try:
                 else:
                     self.layout.update({dt[0]: (byte_pos | dt[3])})
                     byte_pos = byte_pos + (2 ** ((dt[3] >> 28) & 0xF)) * dt[1] if dt[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if dt[3] is uctypes.FLOAT32 else 8
+            if byte_pos > self.span and not self.chksm or byte_pos > (self.span - 2 ) and self.chksm:
+                raise ValueError(f"Struct {self.name} is too big for the memory area ({byte_pos if not self.chksm else byte_pos + 2} bytes used, {self.span} bytes available)")
 
         @staticmethod
         def _ngst(name, span, *rst):
@@ -206,6 +249,8 @@ class Pack(Mem):
             itm.inreg[3] = wdcsr
             wdcsr += (2 ** ((itm.inreg[0] >> 5) & 0b11)) * itm.inreg[2]
             itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + itm.inreg[2]*(1 <<((itm.inreg[0] >>5)&0b11))]
+        if wdcsr > self.span and not self.chksm or wdcsr > (self.span-2) and self.chksm:
+            raise ValueError(f"Pack {self.name} is too big for the memory area ({wdcsr if not self.chksm else wdcsr + 2} bytes used, {self.span} bytes available)")
 
 class Memitem:
     # BITPOS  = 5 BITS : inreg[0], bit 0-4
@@ -309,6 +354,8 @@ try:
                     else:
                         self.layout.update({args[0]: (byte_pos | args[3])})
                         byte_pos = byte_pos + (2 ** ((args[3] >> 28) & 0xF)) * args[1] if args[3] not in (uctypes.FLOAT32, uctypes.FLOAT64) else 4 if args[3] is uctypes.FLOAT32 else 8
+                if byte_pos > self.span and not self.chksm or byte_pos > (self.span - 2) and self.chksm:
+                    raise ValueError(f"Struct {self.name} is too big for the memory area ({byte_pos if not self.chksm else byte_pos + 2} bytes used, {self.span} bytes available)")
 
 
     class IndexBinStruct(Struct):
@@ -373,14 +420,16 @@ class OrderedPack(Pack):
                 itm.inreg[3] = wdcsr + 1 if bt_csr > 0 else wdcsr # if the bits are not aligned
                 wdcsr += (2 ** ((itm.inreg[0] >> 5) & 0b11)) * itm.inreg[2]
                 itm.memref = memoryview(self.buf)[itm.inreg[3]:itm.inreg[3] + itm.inreg[2] * (1 << ((itm.inreg[0] >> 5) & 0b11))]
+        if wdcsr > self.span and not self.chksm or wdcsr > (self.span-2) and self.chksm:
+            raise ValueError(f"Pack {self.name} is too big for the memory area ({wdcsr if not self.chksm else wdcsr + 2} bytes used, {self.span} bytes available)")
 
 if __name__ == "__main__":
     import os
     
     b = bytearray(os.urandom(32))
     nvm = memoryview(b)
-    nvam = Struct('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3, 'ARRAY'), ('PLUS', 4), span =8)
-    mimi = Pack('mimi', nvm, 8, ('passw', 10), ('flag', 1, True), ('Nan', 4))
+    nvam = Struct('nvam', nvm, 0, ('REPL', 1, True), ('DATA', 1, True), ('MNT', 1, True), ('SAC', 3, 'ARRAY'), ('PLUS', 4), span =10, chksm=True)
+    mimi = Pack('mimi', nvm, 8, ('passw', 10), ('flag', 1, True), ('Nan', 4), span=16)
     nvam['SAC'] = 'IOU'
     nvam.post_all()
 
